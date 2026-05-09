@@ -5,23 +5,27 @@ webhook_bp = Blueprint('webhook', __name__)
 
 @webhook_bp.route('/bitbucket', methods=['POST'])
 def handle_bitbucket_webhook():
-    payload = request.get_json()
+    payload = request.json
     
-    # Agora pegamos o evento real direto do cabeçalho que o Bitbucket envia
-    evento = request.headers.get("X-Event-Key")
-    
-    print(f"\n--- Novo evento recebido do Bitbucket: {evento} ---")
-    
-    # O Bitbucket manda os dados de Pull Request (quando é PR) dentro desse bloco
-    pr_data = payload.get("pullrequest", {})
-    pr_id = pr_data.get("id")
-    pr_title = pr_data.get("title")
-    
-    # Se for criação ou atualização de PR, chamamos o nosso Maestro!
-    if evento in ["pullrequest:created", "pullrequest:updated"]:
-        if pr_id:
-            process_pull_request(pr_id, pr_title)
+    if not payload:
+        return jsonify({"erro": "Payload vazio"}), 400
+
+    print("--- Novo evento recebido do Bitbucket ---")
+
+    if 'pullrequest' in payload:
+        pr_data = payload['pullrequest']
+        pr_id = pr_data.get('id')
+        pr_title = pr_data.get('title')
+        
+        # Pegamos os nomes das DUAS branches agora!
+        source_branch = pr_data.get('source', {}).get('branch', {}).get('name')
+        dest_branch = pr_data.get('destination', {}).get('branch', {}).get('name')
+        
+        if pr_id and source_branch and dest_branch:
+            # Passamos as duas branches para o Maestro
+            resultado = process_pull_request(pr_id, pr_title, source_branch, dest_branch)
+            return jsonify(resultado), 200
         else:
-            print("[Aviso] Evento de PR recebido, mas não encontrei o ID do PR no JSON.")
+            return jsonify({"erro": "Dados do PR incompletos no payload"}), 400
             
-    return jsonify({"status": "sucesso", "mensagem": "Webhook recebido"}), 200
+    return jsonify({"mensagem": "Evento ignorado, não é um pullrequest"}), 200
