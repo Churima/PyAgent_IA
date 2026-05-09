@@ -1,49 +1,66 @@
-from app.clients.ai.mock import MockAIAgent
+import os
+import re
 from app.clients.bitbucket import BitbucketClient
+from app.clients.ai.mock import MockAIAgent
+from app.clients.ai.gemini_agent import GeminiAgent
 
-def process_pull_request(pr_id: int, pr_title: str):
-    print(f"\n[Reviewer Service] Iniciando processamento do PR #{pr_id} - '{pr_title}'")
+def obter_agente_ia():
+    ia_escolhida = os.getenv("ACTIVE_AI", "mock").lower()
+    if ia_escolhida == "gemini":
+        if os.getenv("GEMINI_API_KEY"):
+            print("[Sistema] IA selecionada: Google Gemini")
+            return GeminiAgent()
+        else:
+            print("[Aviso] Chave do Gemini não encontrada.")
+            return MockAIAgent()
+    return MockAIAgent()
+
+def extrair_arquivos_do_diff(pr_diff):
+    return re.findall(r'diff --git a/(.*?) b/', pr_diff)
+
+def process_pull_request(pr_id: int, pr_title: str, source_branch: str, dest_branch: str):
+    print(f"\n[Reviewer Service] Processando PR #{pr_id} - '{pr_title}'")
     
-    # 1. Instanciamos nossos "trabalhadores"
     bitbucket_client = BitbucketClient()
-    ai_agent = MockAIAgent()
+    ai_agent = obter_agente_ia()
     
-    # 2. Vamos buscar o código real do Bitbucket
     pr_diff = bitbucket_client.get_pr_diff(pr_id)
-    
     if not pr_diff:
-        print(f"[Reviewer Service] Não foi possível obter o diff do PR #{pr_id}. Encerrando.")
         return {"erro": "Diff não encontrado"}
-        
-    # (No futuro, podemos criar uma função no bitbucket_client para buscar commits reais)
-    fake_commits = ["Comentário de commit simulado"]
+
+    # Captura de Arquivos Completos para dar Contexto à IA
+    arquivos_alterados = extrair_arquivos_do_diff(pr_diff)
+    contexto_arquivos = []
+
+    for path in arquivos_alterados:
+        conteudo_source = bitbucket_client.get_file_raw(source_branch, path)
+        conteudo_dest = bitbucket_client.get_file_raw(dest_branch, path)
+        contexto_arquivos.append({
+            "arquivo": path,
+            "versao_origem": conteudo_source,
+            "versao_destino": conteudo_dest
+        })
+
+    print("[Reviewer Service] Enviando análise para a IA...")
+    analise = ai_agent.analyze_pr(
+        pr_diff=pr_diff, 
+        commit_messages=["Analise de integração"],
+        contexto_arquivos=contexto_arquivos
+    )
     
-    # 3. Mandamos para a IA analisar
-    print("[Reviewer Service] Enviando código para análise da IA...")
-    analise = ai_agent.analyze_pr(pr_diff=pr_diff, commit_messages=fake_commits)
-    
-    # 4. Agimos na resposta da IA e postamos de volta no Bitbucket
-    print("[Reviewer Service] Análise concluída. Processando e postando resultados...")
-    
-    # Se a IA disser que tem conflito:
-    if analise.get("possui_conflito"):
-        msg = "🤖 **IA Agent:** Atenção, detectei que este Pull Request possui conflitos de merge que precisam ser resolvidos."
-        bitbucket_client.post_comment(pr_id=pr_id, content=msg)
-        
-    # Se a IA der sugestões de Clean Code:
+    # --- Postagem de Clean Code ---
     sugestoes = analise.get("sugestoes_clean_code", [])
-    for sugestao in sugestoes:
-        arquivo = sugestao.get("arquivo")
-        linha = sugestao.get("linha")
-        comentario_ia = f"🤖 **IA Agent (Clean Code):**\n{sugestao.get('comentario')}"
-        
-        # O post_comment vai tentar colocar o comentário exatamente na linha do arquivo!
-        bitbucket_client.post_comment(
-            pr_id=pr_id, 
-            content=comentario_ia, 
-            filepath=arquivo, 
-            line=linha
-        )
-        
-    print("[Reviewer Service] Processamento finalizado com sucesso!\n")
-    return analise
+    if sugestoes:
+        print(f"[Reviewer Service] Postando {len(sugestoes)} sugestões de clean code...")
+        for sug in sugestoes:
+            bitbucket_client.post_comment(
+                pr_id=pr_id, 
+                content=f"🤖 **Sugestão da IA:**\n{sug['comentario']}", 
+                filepath=sug["arquivo"], 
+                line=sug["linha"]
+            )
+    else:
+        print("[Reviewer Service] O código está excelente. Nenhuma sugestão encontrada.")
+            
+    print("[Reviewer Service] Processamento finalizado com sucesso!")
+    return {"status": "sucesso"}
