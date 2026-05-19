@@ -4,6 +4,7 @@ from app.clients.bitbucket import BitbucketClient
 from app.clients.ai.mock import MockAIAgent
 from app.clients.ai.gemini_agent import GeminiAgent
 from app.services.git_worker import GitWorker
+from app.clients.ai.claude_agent import ClaudeAgent
 
 def obter_agente_ia():
     """Função Factory que escolhe a IA baseada no arquivo .env"""
@@ -16,14 +17,14 @@ def obter_agente_ia():
         else:
             print("[Aviso] Chave do Gemini não encontrada. Caimos para o Mock.")
             return MockAIAgent()
-            
-    # Futuramente:
-    # elif ia_escolhida == "sonar":
-    #     return SonarAgent()
-        
-    else:
-        print("[Sistema] IA selecionada: Mock (Modo Teste)")
-        return MockAIAgent()
+    elif ia_escolhida == "claude":
+        if os.getenv("CLAUDE_API_KEY"):
+            print("[Sistema] IA selecionada: Claude (Anthropic)")
+            return ClaudeAgent()
+        else:
+            print("[Aviso] Chave do Claude não encontrada.")
+            return MockAIAgent()
+    return MockAIAgent()
 
 def extrair_arquivos_do_diff(pr_diff):
     """Usa regex para encontrar todos os arquivos alterados no diff."""
