@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-PyAgent_IA is a Python microservice that performs automated AI-powered code review on Bitbucket pull requests. It receives Bitbucket webhook events, fetches PR diffs and full file contents, sends them to an AI agent (currently Google Gemini), and posts clean code suggestions as inline PR comments.
+PyAgent_IA is a Python microservice that performs automated AI-powered code review on Bitbucket pull requests. It receives Bitbucket webhook events, fetches PR diffs and full file contents, sends them to an AI agent (Google Gemini or Anthropic Claude), and posts clean code suggestions as inline PR comments.
 
 The codebase is written in Portuguese (variable names, comments, log messages).
 
@@ -47,7 +47,8 @@ Set these in a `.env` file at the project root:
 - **`app/clients/bitbucket.py`** — `BitbucketClient` wraps Bitbucket REST API 2.0 (diff, file content, comments, commits). Uses email + app-password basic auth.
 - **`app/clients/ai/`** — Strategy pattern for AI backends:
   - `base.py` — `BaseAIAgent` ABC defining the `analyze_pr()` contract.
-  - `gemini_agent.py` — `GeminiAgent` sends a structured prompt to Gemini and parses a JSON response with clean code suggestions (`sugestoes_clean_code` array with `arquivo`, `linha`, `comentario` fields).
+  - `gemini_agent.py` — `GeminiAgent` sends a structured prompt to the Google Generative Language REST API directly (no SDK; uses `requests`). Model: `gemini-3.1-flash-lite`. Parses a JSON response with clean code suggestions (`sugestoes_clean_code` array with `arquivo`, `linha`, `comentario` fields).
+  - `claude_agent.py` — `ClaudeAgent` sends a structured prompt to the Anthropic REST API directly (no SDK; uses `requests`). Hardcoded model: `claude-sonnet-4-20250514`. Same response contract as `GeminiAgent`.
   - `mock.py` — `MockAIAgent` returns hardcoded suggestions for local development.
 
 **Adding a new AI backend:** Create a class in `app/clients/ai/` extending `BaseAIAgent`, implement `analyze_pr()`, and add a selection branch in `reviewer.py:obter_agente_ia()`.
