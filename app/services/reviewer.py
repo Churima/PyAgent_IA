@@ -3,6 +3,7 @@ import re
 from app.clients.bitbucket import BitbucketClient
 from app.clients.ai.mock import MockAIAgent
 from app.clients.ai.gemini_agent import GeminiAgent
+from app.clients.ai.claude_agent import ClaudeAgent
 
 def obter_agente_ia():
     ia_escolhida = os.getenv("ACTIVE_AI", "mock").lower()
@@ -12,6 +13,13 @@ def obter_agente_ia():
             return GeminiAgent()
         else:
             print("[Aviso] Chave do Gemini não encontrada.")
+            return MockAIAgent()
+    elif ia_escolhida == "claude":
+        if os.getenv("CLAUDE_API_KEY"):
+            print("[Sistema] IA selecionada: Claude (Anthropic)")
+            return ClaudeAgent()
+        else:
+            print("[Aviso] Chave do Claude não encontrada.")
             return MockAIAgent()
     return MockAIAgent()
 
