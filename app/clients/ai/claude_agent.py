@@ -12,6 +12,8 @@ class ClaudeAgent(BaseAIAgent):
     def analyze_pr(self, pr_diff: str, commit_messages: list, contexto_arquivos: list = None) -> dict:
         print("[ClaudeAgent] Iniciando Smart Review com contexto de arquivos completos...")
 
+        exemplos = self._carregar_exemplos()
+
         arquivos_str = ""
         if contexto_arquivos:
             for item in contexto_arquivos:
@@ -20,23 +22,36 @@ class ClaudeAgent(BaseAIAgent):
                 arquivos_str += f"VERSÃO ORIGEM (DEVELOPER):\n{item['versao_origem']}\n"
 
         system_prompt = (
-            "Você é um Engenheiro de Software Sênior e Especialista em Clean Code. "
-            "Sua tarefa é analisar Pull Requests e sugerir melhorias de código."
+            "Você é um Engenheiro de Software Sênior e Especialista em Git e Clean Code. "
+            "Sua tarefa é analisar Pull Requests, detectar conflitos de merge e sugerir melhorias de código."
         )
+        if exemplos:
+            system_prompt += (
+                "\n\nEXEMPLOS DE REFERÊNCIA (use como guia para calibrar suas respostas):\n"
+                + exemplos
+            )
 
         user_message = f"""
         TAREFA:
-        1. Analise o DIFF e as versões dos arquivos para entender o contexto da alteração do desenvolvedor.
-        2. Identifique problemas de nomenclatura, falta de tipagem (type hints), falta de docstrings, lógica duplicada ou más práticas.
-        3. Retorne SUGESTÕES DE MELHORIA para as linhas que o desenvolvedor alterou ou adicionou.
+        1. Analise o DIFF e as versões dos arquivos (Destino/Main e Origem/Branch).
+        2. Detecte divergências lógicas. Se a branch de Origem altera a mesma lógica que a branch de Destino de forma incompatível, isso é um CONFLITO.
+        3. SE HOUVER CONFLITO: Você deve atuar como a ferramenta 'git merge'. Una a lógica da VERSÃO DESTINO com as inovações da VERSÃO ORIGEM de forma coesa. Retorne o código final perfeitamente mesclado em 'resolucao_conflito'. IMPORTANTE: O código final não deve conter marcações markdown (```python).
+        4. SE NÃO HOUVER CONFLITO: Deixe 'resolucao_conflito' vazio e sugira melhorias de Clean Code preenchendo a lista 'sugestoes_clean_code' com base no DIFF.
 
         CONTEÚDO DOS ARQUIVOS:{arquivos_str}
 
-        DIFF RESUMIDO (Foque suas sugestões nas linhas adicionadas '+'):
+        DIFF RESUMIDO:
         {pr_diff}
 
         RESPONDA APENAS UM JSON VÁLIDO COM ESTA ESTRUTURA:
         {{
+            "possui_conflito": boolean,
+            "resolucao_conflito": [
+                {{
+                    "arquivo": "string (caminho do arquivo)",
+                    "codigo_completo": "string (código inteiro do arquivo resolvido)"
+                }}
+            ],
             "sugestoes_clean_code": [
                 {{
                     "arquivo": "string (caminho do arquivo)",
@@ -64,12 +79,24 @@ class ClaudeAgent(BaseAIAgent):
 
         try:
             response = requests.post(self.url, json=body, headers=headers)
-            data = response.json()
-            texto_resposta = data["content"][0]["text"]
 
+            if response.status_code != 200:
+                print(f"\n[ALERTA CLAUDE] A Anthropic recusou a requisição!")
+                print(f"Status Code: {response.status_code}")
+                print(f"Detalhes: {response.text}\n")
+                return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": []}
+
+            data = response.json()
+
+            if "content" not in data:
+                print(f"\n[ALERTA CLAUDE] Resposta inesperada da Anthropic:")
+                print(f"JSON Retornado: {data}\n")
+                return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": []}
+
+            texto_resposta = data["content"][0]["text"]
             texto_limpo = texto_resposta.replace("```json", "").replace("```", "").strip()
             return json.loads(texto_limpo)
 
         except Exception as e:
-            print(f"[Erro Claude] {e}")
-            return {"sugestoes_clean_code": []}
+            print(f"[Erro Interno ClaudeAgent] Falha no parse: {e}")
+            return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": []}
