@@ -19,20 +19,28 @@ class GeminiAgent(BaseAIAgent):
                 arquivos_str += f"VERSÃO ORIGEM (DEVELOPER):\n{item['versao_origem']}\n"
 
         prompt = f"""
-        Você é um Engenheiro de Software Sênior e Especialista em Clean Code.
+        Você é um Engenheiro de Software Sênior e Especialista em Git e Clean Code.
         
         TAREFA:
-        1. Analise o DIFF e as versões dos arquivos para entender o contexto da alteração do desenvolvedor.
-        2. Identifique problemas de nomenclatura, falta de tipagem (type hints), falta de docstrings, lógica duplicada ou más práticas.
-        3. Retorne SUGESTÕES DE MELHORIA para as linhas que o desenvolvedor alterou ou adicionou.
+        1. Analise o DIFF e as versões dos arquivos (Destino/Main e Origem/Branch).
+        2. Detecte divergências lógicas. Se a branch de Origem altera a mesma lógica que a branch de Destino de forma incompatível, isso é um CONFLITO.
+        3. SE HOUVER CONFLITO: Você deve atuar como a ferramenta 'git merge'. Una a lógica da VERSÃO DESTINO com as inovações da VERSÃO ORIGEM de forma coesa. Retorne o código final perfeitamente mesclado em 'resolucao_conflito'. IMPORTANTE: O código final não deve conter marcações markdown (```python).
+        4. SE NÃO HOUVER CONFLITO: Deixe 'resolucao_conflito' vazio e sugira melhorias de Clean Code preenchendo a lista 'sugestoes_clean_code' com base no DIFF.
 
         CONTEÚDO DOS ARQUIVOS:{arquivos_str}
 
-        DIFF RESUMIDO (Foque suas sugestões nas linhas adicionadas '+'):
+        DIFF RESUMIDO:
         {pr_diff}
 
         RESPONDA APENAS UM JSON VÁLIDO COM ESTA ESTRUTURA:
         {{
+            "possui_conflito": boolean,
+            "resolucao_conflito": [
+                {{
+                    "arquivo": "string (caminho do arquivo)",
+                    "codigo_completo": "string (código inteiro do arquivo resolvido)"
+                }}
+            ],
             "sugestoes_clean_code": [
                 {{ 
                     "arquivo": "string (caminho do arquivo)", 
@@ -47,12 +55,26 @@ class GeminiAgent(BaseAIAgent):
 
         try:
             response = requests.post(self.url, json=body, headers={'Content-Type': 'application/json'})
+            
+            if response.status_code != 200:
+                print(f"\n[ALERTA GEMINI] O Google recusou a requisição!")
+                print(f"Status Code: {response.status_code}")
+                print(f"Detalhes: {response.text}\n")
+                return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": []}
+
             data = response.json()
+            
+            # --- É AQUI QUE VAMOS PEGAR O ERRO ---
+            if 'candidates' not in data:
+                print(f"\n[ALERTA GEMINI] Resposta estranha do Google:")
+                print(f"JSON Retornado: {data}\n")
+                return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": []}
+
             texto_resposta = data['candidates'][0]['content']['parts'][0]['text']
             
             texto_limpo = texto_resposta.replace("```json", "").replace("```", "").strip()
             return json.loads(texto_limpo)
             
         except Exception as e:
-            print(f"[Erro Gemini] {e}")
-            return {"sugestoes_clean_code": []}
+            print(f"[Erro Interno GeminiAgent] Falha no parse: {e}")
+            return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": []}
