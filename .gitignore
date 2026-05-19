@@ -8,3 +8,6 @@ env/
 # Arquivos temporários do Python
 __pycache__/
 *.pyc
+
+# Arquivos do Claude Code
+.claude

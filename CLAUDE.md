@@ -43,8 +43,9 @@ Set these in a `.env` file at the project root:
 
 - **`app/main.py`** — Flask app entry point. Registers the webhook blueprint under `/webhook`.
 - **`app/api/webhook.py`** — Single endpoint `POST /webhook/bitbucket`. Extracts PR id, title, source/dest branches from the Bitbucket payload.
-- **`app/services/reviewer.py`** — Orchestrator. Fetches the PR diff, downloads full file contents from both branches for context, calls the AI agent, and posts resulting suggestions as inline Bitbucket comments.
+- **`app/services/reviewer.py`** — Orchestrator. Fetches the PR diff, downloads full file contents from both branches for context, calls the AI agent, and posts resulting suggestions as inline Bitbucket comments. Includes a circuit breaker: skips processing if the latest commit message is "🤖 IA Auto-fix" to prevent infinite loops. When the AI detects a merge conflict (`possui_conflito: true`), delegates resolution to `GitWorker`.
 - **`app/clients/bitbucket.py`** — `BitbucketClient` wraps Bitbucket REST API 2.0 (diff, file content, comments, commits). Uses email + app-password basic auth.
+- **`app/services/git_worker.py`** — Performs real Git merges in a temp directory: clones the repo, merges source into dest, writes the AI-resolved file content, commits with proper merge history (git user: "🤖 IA Auto-fix Bot"), and pushes back to Bitbucket. URL-encodes the Bitbucket username to handle `@` characters.
 - **`app/clients/ai/`** — Strategy pattern for AI backends:
   - `base.py` — `BaseAIAgent` ABC defining the `analyze_pr()` contract.
   - `gemini_agent.py` — `GeminiAgent` sends a structured prompt to the Google Generative Language REST API directly (no SDK; uses `requests`). Model: `gemini-3.1-flash-lite`. Parses a JSON response with clean code suggestions (`sugestoes_clean_code` array with `arquivo`, `linha`, `comentario` fields).
@@ -53,7 +54,10 @@ Set these in a `.env` file at the project root:
 
 **Adding a new AI backend:** Create a class in `app/clients/ai/` extending `BaseAIAgent`, implement `analyze_pr()`, and add a selection branch in `reviewer.py:obter_agente_ia()`.
 
-**AI response contract:** All AI agents must return a dict with key `sugestoes_clean_code`, a list of `{"arquivo": str, "linha": int, "comentario": str}`.
+**AI response contract:** All AI agents must return a dict with:
+- `sugestoes_clean_code` — list of `{"arquivo": str, "linha": int, "comentario": str}`
+- `possui_conflito` — bool indicating whether a merge conflict was detected
+- `resolucao_conflito` — (when `possui_conflito` is true) dict with `{"arquivo": str, "codigo_completo": str}` containing the fully resolved file
 
 ## Local Development with Ngrok
 
