@@ -10,7 +10,13 @@ class GeminiAgent(BaseAIAgent):
         
     def analyze_pr(self, pr_diff: str, commit_messages: list, contexto_arquivos: list = None) -> dict:
         print("[GeminiAgent] Iniciando Smart Review com contexto de arquivos completos...")
-        
+
+        exemplos = self._carregar_exemplos()
+        exemplos_secao = (
+            f"\n\nEXEMPLOS DE REFERÊNCIA (use como guia para calibrar suas respostas):\n{exemplos}\n---\n"
+            if exemplos else ""
+        )
+
         arquivos_str = ""
         if contexto_arquivos:
             for item in contexto_arquivos:
@@ -20,7 +26,7 @@ class GeminiAgent(BaseAIAgent):
 
         prompt = f"""
         Você é um Engenheiro de Software Sênior e Especialista em Git e Clean Code.
-        
+        {exemplos_secao}
         TAREFA:
         1. Analise o DIFF e as versões dos arquivos (Destino/Main e Origem/Branch).
         2. Detecte divergências lógicas. Se a branch de Origem altera a mesma lógica que a branch de Destino de forma incompatível, isso é um CONFLITO.
