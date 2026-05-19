@@ -6,7 +6,7 @@ class MockAIAgent(BaseAIAgent):
     Retorna sempre uma resposta estática padronizada.
     """
     
-    def analyze_pr(self, pr_diff: str, commit_messages: list) -> dict:
+    def analyze_pr(self, pr_diff: str, commit_messages: list, contexto_arquivos: list = None) -> dict:
         print("[MockAIAgent] Simulando análise de código com Inteligência Artificial...")
         
         # Simulamos a estrutura de resposta que a IA real nos daria
