@@ -14,6 +14,8 @@ class ClaudeAgent(BaseAIAgent):
 
         exemplos = self._carregar_exemplos()
 
+        commits_str = "\n".join(f"- {msg}" for msg in commit_messages) if commit_messages else "- Não informado"
+
         arquivos_str = ""
         if contexto_arquivos:
             for item in contexto_arquivos:
@@ -37,6 +39,10 @@ class ClaudeAgent(BaseAIAgent):
         2. Detecte divergências lógicas. Se a branch de Origem altera a mesma lógica que a branch de Destino de forma incompatível, isso é um CONFLITO.
         3. SE HOUVER CONFLITO: Você deve atuar como a ferramenta 'git merge'. Una a lógica da VERSÃO DESTINO com as inovações da VERSÃO ORIGEM de forma coesa. Retorne o código final perfeitamente mesclado em 'resolucao_conflito'. IMPORTANTE: O código final não deve conter marcações markdown (```python).
         4. SE NÃO HOUVER CONFLITO: Deixe 'resolucao_conflito' vazio e sugira melhorias de Clean Code preenchendo a lista 'sugestoes_clean_code' com base no DIFF.
+        5. Considere as mensagens de commit para identificar inconsistências entre a intenção declarada e as mudanças reais no código.
+
+        MENSAGENS DE COMMIT DA BRANCH (mais recentes primeiro):
+        {commits_str}
 
         CONTEÚDO DOS ARQUIVOS:{arquivos_str}
 

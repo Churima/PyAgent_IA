@@ -36,8 +36,8 @@ def process_pull_request(pr_id: int, pr_title: str, source_branch: str, dest_bra
     bitbucket_client = BitbucketClient()
     
     # --- O CORTA-CORRENTE (CIRCUIT BREAKER) ---
-    ultima_msg = bitbucket_client.get_latest_commit_message(source_branch)
-    if "🤖 IA Auto-fix" in ultima_msg:
+    commit_messages = bitbucket_client.get_recent_commit_messages(source_branch)
+    if commit_messages and "🤖 IA Auto-fix" in commit_messages[0]:
         print("[Reviewer Service] 🛑 O último commit foi feito pela IA. Abortando para evitar Loop Infinito!")
         return {"status": "ignorado", "motivo": "loop_infinito_prevenido"}
 
@@ -64,9 +64,9 @@ def process_pull_request(pr_id: int, pr_title: str, source_branch: str, dest_bra
 
     print("[Reviewer Service] Enviando análise para a IA (Modo Smart Merge)...")
     analise = ai_agent.analyze_pr(
-        pr_diff=pr_diff, 
-        commit_messages=["Analise de integração"],
-        contexto_arquivos=contexto_arquivos 
+        pr_diff=pr_diff,
+        commit_messages=commit_messages,
+        contexto_arquivos=contexto_arquivos
     )
     
     # --- NOVO BLOCO: AUTO-FIX REAL COM GIT ---

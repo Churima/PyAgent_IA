@@ -30,7 +30,8 @@ Set these in a `.env` file at the project root:
 - `ACTIVE_AI` — which AI backend to use (`gemini`, `claude`, or `mock`; defaults to `mock`)
 - `GEMINI_API_KEY` — API key for Google Gemini (required when `ACTIVE_AI=gemini`)
 - `CLAUDE_API_KEY` — API key for Anthropic Claude (required when `ACTIVE_AI=claude`)
-- `BITBUCKET_EMAIL` — Bitbucket account email for API auth
+- `BITBUCKET_EMAIL` — Bitbucket account email for API auth (used by `BitbucketClient`)
+- `BITBUCKET_USERNAME` — Bitbucket username (used by `GitWorker` to build the authenticated Git clone URL; may differ from the email)
 - `BITBUCKET_API_TOKEN` — Bitbucket app password / API token
 - `BITBUCKET_WORKSPACE` — Bitbucket workspace slug
 - `BITBUCKET_REPO_SLUG` — target repository slug

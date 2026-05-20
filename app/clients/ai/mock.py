@@ -12,6 +12,7 @@ class MockAIAgent(BaseAIAgent):
         # Simulamos a estrutura de resposta que a IA real nos daria
         resultado = {
             "possui_conflito": False,
+            "resolucao_conflito": [],
             "sugestoes_clean_code": [
                 {
                     "arquivo": "src/main.py",

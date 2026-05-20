@@ -87,14 +87,12 @@ class BitbucketClient:
             print(f"[Aviso] Arquivo não encontrado ou erro na branch {branch_name}: {response.status_code}")
             return ""                      
             
-    def get_latest_commit_message(self, branch_name: str) -> str:
-        """Pega a mensagem do último commit da branch para evitar loop infinito."""
+    def get_recent_commit_messages(self, branch_name: str, limit: int = 5) -> list:
+        """Retorna as mensagens dos commits mais recentes da branch."""
         url = f"{self.base_url}/commits/{branch_name}"
         response = requests.get(url, auth=self.auth)
-        
+
         if response.status_code == 200:
             commits = response.json().get('values', [])
-            if commits:
-                # Retorna a mensagem do commit mais recente
-                return commits[0].get('message', '')
-        return ""            
+            return [c.get('message', '').strip() for c in commits[:limit]]
+        return []
