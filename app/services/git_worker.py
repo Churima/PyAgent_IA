@@ -17,6 +17,31 @@ class GitWorker:
         # Montamos a URL com o email codificado
         self.repo_url = f"https://{username_codificado}:{self.token}@bitbucket.org/{self.workspace}/{self.repo_slug}.git"
 
+    def verificar_conflito(self, source_branch: str, dest_branch: str) -> bool:
+        """Verifica se há conflito de merge sem criar commit nem modificar o repositório remoto."""
+        print(f"[GitWorker] Verificando conflito entre '{source_branch}' e '{dest_branch}'...")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                subprocess.run(
+                    ["git", "clone", "--single-branch", "--branch", source_branch, self.repo_url, "."],
+                    cwd=tmpdir, check=True, capture_output=True
+                )
+                subprocess.run(
+                    ["git", "fetch", "origin", dest_branch],
+                    cwd=tmpdir, check=True, capture_output=True
+                )
+                result = subprocess.run(
+                    ["git", "merge", f"origin/{dest_branch}"],
+                    cwd=tmpdir, capture_output=True
+                )
+                tem_conflito = result.returncode != 0
+                print(f"[GitWorker] Resultado: {'CONFLICTED' if tem_conflito else 'CLEAN'}")
+                return tem_conflito
+            except subprocess.CalledProcessError as e:
+                err = (e.stderr.decode().strip() if e.stderr else "") or (e.stdout.decode().strip() if e.stdout else "") or "Erro desconhecido"
+                print(f"[GitWorker] Erro na verificação de conflito: {err}")
+                return False
+
     def resolve_with_merge(self, source_branch, dest_branch, filepath, fixed_content):
         """
         Realiza um merge real em uma pasta temporária para criar um commit de 2 pais.
@@ -42,7 +67,13 @@ class GitWorker:
                 subprocess.run(["git", "fetch", "origin", dest_branch], cwd=tmpdir, check=True, capture_output=True)
                 
                 # O merge vai "falhar" (retornar erro) se houver conflito, por isso não usamos check=True aqui
-                subprocess.run(["git", "merge", f"origin/{dest_branch}"], cwd=tmpdir, capture_output=True)
+                merge_result = subprocess.run(["git", "merge", f"origin/{dest_branch}"], cwd=tmpdir, capture_output=True)
+
+                if merge_result.returncode == 0:
+                    print(f"[GitWorker] ✅ Merge sem conflito real detectado pelo Git. Nada a resolver.")
+                    return False
+
+                print(f"[GitWorker] ⚠️ Conflito confirmado pelo Git. Aplicando resolução da IA...")
 
                 # 5. A MÁGICA: Sobrescrita do arquivo em conflito com a solução da IA
                 full_path = os.path.join(tmpdir, filepath)
@@ -62,7 +93,7 @@ class GitWorker:
                 return True
 
             except subprocess.CalledProcessError as e:
-                err = e.stderr.decode() if e.stderr else "Erro desconhecido"
+                err = (e.stderr.decode().strip() if e.stderr else "") or (e.stdout.decode().strip() if e.stdout else "") or "Erro desconhecido"
                 print(f"[Erro GitWorker] Falha no Git: {err}")
                 return False
             except Exception as e:

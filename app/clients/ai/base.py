@@ -19,9 +19,10 @@ class BaseAIAgent(ABC):
             return ""
 
     @abstractmethod
-    def analyze_pr(self, pr_diff: str, commit_messages: list, contexto_arquivos: list = None) -> dict:
+    def analyze_pr(self, pr_diff: str, commit_messages: list, contexto_arquivos: list = None, modo: str = "clean_code") -> dict:
         """
-        Recebe o diff do código, as mensagens de commit e opcionalmente o conteúdo
-        completo dos arquivos alterados, e retorna um dicionário com a análise.
+        Recebe o diff, mensagens de commit e, no modo 'resolver_conflito', o conteúdo
+        completo dos arquivos alterados. Retorna um dicionário com sugestões ou resolução.
+        Modos: 'clean_code' | 'resolver_conflito'
         """
         pass
