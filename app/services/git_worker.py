@@ -22,16 +22,13 @@ class GitWorker:
         print(f"[GitWorker] Verificando conflito entre '{source_branch}' e '{dest_branch}'...")
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
+                # Clone completo (sem --single-branch) para que origin/dest_branch
+                # já exista como ref após o clone, sem precisar de fetch adicional.
                 subprocess.run(
-                    ["git", "clone", "--single-branch", "--branch", source_branch, self.repo_url, "."],
+                    ["git", "clone", "--branch", source_branch, self.repo_url, "."],
                     cwd=tmpdir, check=True, capture_output=True
                 )
-                subprocess.run(
-                    ["git", "fetch", "origin", dest_branch],
-                    cwd=tmpdir, check=True, capture_output=True
-                )
-                # --no-commit: executa o merge mas não tenta criar o commit,
-                # evitando falha por ausência de user.name/user.email na config local.
+                # --no-commit: verifica o merge sem criar commit (não precisa de user config).
                 # Exit code != 0 ocorre exclusivamente quando há conflito de conteúdo.
                 result = subprocess.run(
                     ["git", "merge", "--no-commit", f"origin/{dest_branch}"],
