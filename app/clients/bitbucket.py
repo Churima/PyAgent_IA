@@ -17,11 +17,11 @@ class BitbucketClient:
     def get_pr_diff(self, pr_id: int) -> str:
         print(f"[BitbucketClient] Buscando diff do PR #{pr_id}...")
         url = f"{self.base_url}/pullrequests/{pr_id}/diff"
-        
+
         response = requests.get(url, auth=self.auth)
-        
+
         if response.status_code == 200:
-            return response.text
+            return response.content.decode('utf-8')
         else:
             print(f"[Erro] Falha ao buscar diff: {response.status_code} - {response.text}")
             return ""
@@ -78,11 +78,11 @@ class BitbucketClient:
         """Baixa o conteúdo completo de um arquivo em uma branch específica."""
         print(f"[BitbucketClient] Baixando arquivo '{filepath}' da branch '{branch_name}'...")
         url = f"{self.base_url}/src/{branch_name}/{filepath}"
-        
+
         response = requests.get(url, auth=self.auth)
-        
+
         if response.status_code == 200:
-            return response.text
+            return response.content.decode('utf-8')
         else:
             print(f"[Aviso] Arquivo não encontrado ou erro na branch {branch_name}: {response.status_code}")
             return ""                      
