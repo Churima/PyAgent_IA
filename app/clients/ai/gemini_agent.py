@@ -97,21 +97,21 @@ class GeminiAgent(BaseAIAgent):
                 print(f"\n[ALERTA GEMINI] O Google recusou a requisição!")
                 print(f"Status Code: {response.status_code}")
                 print(f"Detalhes: {response.text}\n")
-                return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": []}
+                return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": [], "_erro_parse": True}
 
             data = response.json()
-            
+
             # --- É AQUI QUE VAMOS PEGAR O ERRO ---
             if 'candidates' not in data:
                 print(f"\n[ALERTA GEMINI] Resposta estranha do Google:")
                 print(f"JSON Retornado: {data}\n")
-                return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": []}
+                return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": [], "_erro_parse": True}
 
             texto_resposta = data['candidates'][0]['content']['parts'][0]['text']
-            
+
             texto_limpo = texto_resposta.replace("```json", "").replace("```", "").strip()
             return json.loads(texto_limpo)
-            
+
         except Exception as e:
             print(f"[Erro Interno GeminiAgent] Falha no parse: {e}")
-            return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": []}
+            return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": [], "_erro_parse": True}

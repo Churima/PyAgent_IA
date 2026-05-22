@@ -116,14 +116,14 @@ class ClaudeAgent(BaseAIAgent):
                 print(f"\n[ALERTA CLAUDE] A Anthropic recusou a requisição!")
                 print(f"Status Code: {response.status_code}")
                 print(f"Detalhes: {response.text}\n")
-                return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": []}
+                return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": [], "_erro_parse": True}
 
             data = response.json()
 
             if "content" not in data:
                 print(f"\n[ALERTA CLAUDE] Resposta inesperada da Anthropic:")
                 print(f"JSON Retornado: {data}\n")
-                return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": []}
+                return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": [], "_erro_parse": True}
 
             texto_resposta = data["content"][0]["text"]
             texto_limpo = texto_resposta.replace("```json", "").replace("```", "").strip()
@@ -131,4 +131,4 @@ class ClaudeAgent(BaseAIAgent):
 
         except Exception as e:
             print(f"[Erro Interno ClaudeAgent] Falha no parse: {e}")
-            return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": []}
+            return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": [], "_erro_parse": True}

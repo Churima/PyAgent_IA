@@ -14,3 +14,6 @@ __pycache__/
 
 # Payloads de debug do webhook
 debug_payloads/
+
+# Dados de teste — não versionar
+logs/
