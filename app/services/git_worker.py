@@ -30,8 +30,11 @@ class GitWorker:
                     ["git", "fetch", "origin", dest_branch],
                     cwd=tmpdir, check=True, capture_output=True
                 )
+                # --no-commit: executa o merge mas não tenta criar o commit,
+                # evitando falha por ausência de user.name/user.email na config local.
+                # Exit code != 0 ocorre exclusivamente quando há conflito de conteúdo.
                 result = subprocess.run(
-                    ["git", "merge", f"origin/{dest_branch}"],
+                    ["git", "merge", "--no-commit", f"origin/{dest_branch}"],
                     cwd=tmpdir, capture_output=True
                 )
                 tem_conflito = result.returncode != 0
