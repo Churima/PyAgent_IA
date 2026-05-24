@@ -59,19 +59,45 @@ class GeminiAgent(BaseAIAgent):
             }}
             """
         else:
+            arquivos_str = ""
+            if contexto_arquivos:
+                for item in contexto_arquivos:
+                    arquivos_str += f"\n--- ARQUIVO: {item['arquivo']} ---\n"
+                    arquivos_str += f"VERSÃO DESTINO (MAIN):\n{item['versao_destino']}\n"
+                    arquivos_str += f"VERSÃO ORIGEM (DEVELOPER):\n{item['versao_origem']}\n"
+
             prompt = f"""
-            Você é um Engenheiro de Software Sênior especialista em Clean Code.
+            Você é um Engenheiro de Software Sênior especialista em Clean Code e revisão de código.
             {exemplos_secao}
-            CONTEXTO: Este PR não possui conflitos de merge. Foque exclusivamente em qualidade de código.
+            CONTEXTO: Este PR não possui conflitos de merge sintáticos (sem marcadores <<<<<<<).
+            No entanto, conflitos semânticos — onde duas branches alteram arquivos diferentes de forma
+            logicamente incompatível — não geram marcadores e passam invisíveis pelo Git.
 
             TAREFA:
-            1. Analise o DIFF e as mensagens de commit.
-            2. Identifique oportunidades de melhoria: nomenclatura, complexidade, duplicação, legibilidade, boas práticas.
-            3. Para cada problema encontrado, indique o arquivo, a linha no diff e uma explicação clara e profissional.
-            4. Se o código estiver bem escrito, retorne a lista vazia.
+            1. Analise o DIFF e as versões completas dos arquivos (origem e destino) para entender
+               o contexto amplo de cada alteração.
+            2. Identifique oportunidades de melhoria de qualidade: nomenclatura, complexidade,
+               duplicação, legibilidade e boas práticas.
+            3. ADICIONALMENTE, compare ativamente as versões de origem e destino de cada arquivo
+               para detectar inconsistências semânticas introduzidas pelas alterações combinadas.
+               Exemplos a procurar:
+               - Função que muda de assinatura em um arquivo mas seus chamadores em outros arquivos
+                 ainda usam a assinatura antiga (parâmetros faltando, ordem trocada, tipo diferente).
+               - Constante ou configuração redefinida de forma incompatível entre módulos.
+               - Fluxo de controle ou contrato de interface que se contradiz entre arquivos distintos.
+               - Lógica duplicada que divergiu entre branches e agora coexiste de forma inconsistente.
+            4. IMPORTANTE: não confunda inconsistência semântica com violação de estilo. Uma
+               inconsistência semântica causa comportamento incorreto em tempo de execução; uma
+               violação de estilo apenas prejudica a legibilidade. Reporte ambas, mas diferencie
+               claramente no comentário qual tipo cada sugestão representa.
+            5. Use a linha mais relevante do diff como referência de posicionamento para cada item.
+            6. Se o código estiver correto e bem escrito, retorne a lista vazia.
 
             MENSAGENS DE COMMIT DA BRANCH (mais recentes primeiro):
             {commits_str}
+
+            CONTEÚDO COMPLETO DOS ARQUIVOS ALTERADOS:
+            {arquivos_str}
 
             DIFF:
             {pr_diff}

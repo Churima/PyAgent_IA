@@ -61,7 +61,7 @@ def process_pull_request(pr_id: int, pr_title: str, source_branch: str, dest_bra
         dados_log = _processar_conflito(pr_id, source_branch, dest_branch, pr_diff, commit_messages, ai_agent, bitbucket_client)
     else:
         print("[Reviewer Service] ✅ PR sem conflito. Iniciando modo de revisão de clean code...")
-        dados_log = _processar_clean_code(pr_id, pr_diff, commit_messages, ai_agent, bitbucket_client)
+        dados_log = _processar_clean_code(pr_id, pr_diff, source_branch, dest_branch, commit_messages, ai_agent, bitbucket_client)
 
     registrar_execucao({
         "agente": nome_agente,
@@ -108,25 +108,33 @@ def _processar_conflito(pr_id, source_branch, dest_branch, pr_diff, commit_messa
     if not resolucoes:
         print("[Reviewer Service] IA não retornou resolução de conflito.")
     else:
-        worker = GitWorker()
-        for res in resolucoes:
-            print(f"[Reviewer Service] 🛠 Chamando GitWorker para {res['arquivo']}...")
-            codigo_limpo = res["codigo_completo"].replace("```python", "").replace("```", "").strip()
+        # Limpa crases markdown de todos os arquivos antes de passar ao GitWorker
+        resolucoes_limpas = [
+            {
+                "arquivo": res["arquivo"],
+                "codigo_completo": res["codigo_completo"].replace("```python", "").replace("```", "").strip(),
+            }
+            for res in resolucoes
+        ]
 
-            gitworker_acionado = True
-            sucesso = worker.resolve_with_merge(
-                source_branch=source_branch,
-                dest_branch=dest_branch,
-                filepath=res["arquivo"],
-                fixed_content=codigo_limpo,
+        arquivos_log = ", ".join(f"'{r['arquivo']}'" for r in resolucoes_limpas)
+        print(f"[Reviewer Service] 🛠 Chamando GitWorker para {arquivos_log}...")
+
+        # Uma única chamada: todos os arquivos resolvidos num só commit de merge
+        gitworker_acionado = True
+        sucesso = GitWorker().resolve_with_merge(
+            source_branch=source_branch,
+            dest_branch=dest_branch,
+            resolucoes=resolucoes_limpas,
+        )
+        sucessos.append(sucesso)
+
+        if sucesso:
+            arquivos_str = ", ".join(f"`{r['arquivo']}`" for r in resolucoes_limpas)
+            bitbucket_client.post_comment(
+                pr_id,
+                f"🤖 **Auto-fix (Real Git Merge):** Conflitos em {arquivos_str} resolvidos com commit de merge real. A tag CONFLICTED deve sumir agora!",
             )
-            sucessos.append(sucesso)
-
-            if sucesso:
-                bitbucket_client.post_comment(
-                    pr_id,
-                    f"🤖 **Auto-fix (Real Git Merge):** Conflito em `{res['arquivo']}` resolvido com commit de merge real.",
-                )
 
     return {
         "tempo_segundos": tempo_segundos,
@@ -140,12 +148,23 @@ def _processar_conflito(pr_id, source_branch, dest_branch, pr_diff, commit_messa
     }
 
 
-def _processar_clean_code(pr_id, pr_diff, commit_messages, ai_agent, bitbucket_client) -> dict:
+def _processar_clean_code(pr_id, pr_diff, source_branch, dest_branch, commit_messages, ai_agent, bitbucket_client) -> dict:
+    arquivos_alterados = extrair_arquivos_do_diff(pr_diff)
+    contexto_arquivos = []
+    for path in arquivos_alterados:
+        print(f"[Reviewer Service] Capturando contexto do arquivo: {path}")
+        contexto_arquivos.append({
+            "arquivo": path,
+            "versao_origem": bitbucket_client.get_file_raw(source_branch, path),
+            "versao_destino": bitbucket_client.get_file_raw(dest_branch, path),
+        })
+
     print("[Reviewer Service] Enviando para a IA (modo: clean_code)...")
     inicio = time.time()
     analise = ai_agent.analyze_pr(
         pr_diff=pr_diff,
         commit_messages=commit_messages,
+        contexto_arquivos=contexto_arquivos,
         modo="clean_code",
     )
     tempo_segundos = round(time.time() - inicio, 2)
