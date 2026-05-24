@@ -58,6 +58,11 @@ class ClaudeAgent(BaseAIAgent):
                     }}
                 ]
             }}
+
+            REGRAS CRÍTICAS PARA O JSON:
+            - O campo "codigo_completo" é uma string JSON. Toda aspa dupla dentro do código Python DEVE ser escapada como \\"
+            - Exemplo correto: "codigo_completo": "logger.info(\\"mensagem\\")"
+            - Nunca quebre a string com aspas não escapadas
             """
         else:
             arquivos_str = ""
@@ -129,7 +134,7 @@ class ClaudeAgent(BaseAIAgent):
 
         body = {
             "model": self.model,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "system": system_prompt,
             "messages": [
                 {"role": "user", "content": user_message}
@@ -154,8 +159,21 @@ class ClaudeAgent(BaseAIAgent):
 
             texto_resposta = data["content"][0]["text"]
             texto_limpo = texto_resposta.replace("```json", "").replace("```", "").strip()
-            return json.loads(texto_limpo)
+
+            try:
+                return json.loads(texto_limpo)
+            except json.JSONDecodeError as e:
+                print(f"[ClaudeAgent] JSON direto falhou ({e}), tentando reparar...")
+                try:
+                    from json_repair import repair_json
+                    reparado = repair_json(texto_limpo)
+                    resultado = json.loads(reparado)
+                    print("[ClaudeAgent] JSON reparado com sucesso.")
+                    return resultado
+                except Exception as e2:
+                    print(f"[Erro Interno ClaudeAgent] Falha no parse mesmo após reparo: {e2}")
+                    return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": [], "_erro_parse": True}
 
         except Exception as e:
-            print(f"[Erro Interno ClaudeAgent] Falha no parse: {e}")
+            print(f"[Erro Interno ClaudeAgent] Erro inesperado: {e}")
             return {"possui_conflito": False, "resolucao_conflito": [], "sugestoes_clean_code": [], "_erro_parse": True}
