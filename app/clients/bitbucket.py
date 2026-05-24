@@ -1,4 +1,5 @@
 import os
+import urllib.parse
 import requests
 
 class BitbucketClient:
@@ -77,7 +78,8 @@ class BitbucketClient:
     def get_file_raw(self, branch_name: str, filepath: str) -> str:
         """Baixa o conteúdo completo de um arquivo em uma branch específica."""
         print(f"[BitbucketClient] Baixando arquivo '{filepath}' da branch '{branch_name}'...")
-        url = f"{self.base_url}/src/{branch_name}/{filepath}"
+        encoded_branch = urllib.parse.quote(branch_name, safe='')
+        url = f"{self.base_url}/src/{encoded_branch}/{filepath}"
 
         response = requests.get(url, auth=self.auth)
 
@@ -89,7 +91,8 @@ class BitbucketClient:
             
     def get_recent_commit_messages(self, branch_name: str, limit: int = 5) -> list:
         """Retorna as mensagens dos commits mais recentes da branch."""
-        url = f"{self.base_url}/commits/{branch_name}"
+        encoded_branch = urllib.parse.quote(branch_name, safe='')
+        url = f"{self.base_url}/commits/{encoded_branch}"
         response = requests.get(url, auth=self.auth)
 
         if response.status_code == 200:

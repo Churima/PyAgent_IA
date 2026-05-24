@@ -42,54 +42,62 @@ class GitWorker:
                 print(f"[GitWorker] Erro na verificação de conflito: {err}")
                 return False
 
-    def resolve_with_merge(self, source_branch, dest_branch, filepath, fixed_content):
+    def resolve_with_merge(self, source_branch: str, dest_branch: str, resolucoes: list) -> bool:
         """
-        Realiza um merge real em uma pasta temporária para criar um commit de 2 pais.
+        Realiza um merge real resolvendo TODOS os arquivos conflitantes em um único commit.
+
+        Args:
+            source_branch: Branch de origem do PR.
+            dest_branch: Branch de destino (ex: main).
+            resolucoes: Lista de dicts com 'arquivo' e 'codigo_completo' para cada arquivo.
         """
-        # Cria uma pasta temporária que se apaga sozinha no final
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
                 print(f"[GitWorker] 📁 Criando ambiente temporário em: {tmpdir}")
-                
-                # 1. Clonar o repositório (apenas o necessário)
+
+                # 1. Clonar o repositório
                 subprocess.run(["git", "clone", self.repo_url, "."], cwd=tmpdir, check=True, capture_output=True)
-                
-                # 2. Configurar um usuário fantasma para o commit não falhar
+
+                # 2. Configurar usuário fantasma para o commit
                 subprocess.run(["git", "config", "user.email", "ia-bot@agent.com"], cwd=tmpdir, check=True)
                 subprocess.run(["git", "config", "user.name", "🤖 IA Auto-fix Bot"], cwd=tmpdir, check=True)
 
                 # 3. Checkout na branch do desenvolvedor
                 subprocess.run(["git", "checkout", source_branch], cwd=tmpdir, check=True, capture_output=True)
 
-                # 4. Tentar o MERGE da branch de destino (ex: main)
-                # Isso vai forçar o Git a entrar em estado de conflito localmente
+                # 4. Tentar o merge — vai falhar se houver conflito (esperado)
                 print(f"[GitWorker] 🔀 Executando: git merge origin/{dest_branch}")
                 subprocess.run(["git", "fetch", "origin", dest_branch], cwd=tmpdir, check=True, capture_output=True)
-                
-                # O merge vai "falhar" (retornar erro) se houver conflito, por isso não usamos check=True aqui
                 merge_result = subprocess.run(["git", "merge", f"origin/{dest_branch}"], cwd=tmpdir, capture_output=True)
 
                 if merge_result.returncode == 0:
                     print(f"[GitWorker] ✅ Merge sem conflito real detectado pelo Git. Nada a resolver.")
                     return False
 
-                print(f"[GitWorker] ⚠️ Conflito confirmado pelo Git. Aplicando resolução da IA...")
+                print(f"[GitWorker] ⚠️ Conflito confirmado. Aplicando {len(resolucoes)} resolução(ões) da IA...")
 
-                # 5. A MÁGICA: Sobrescrita do arquivo em conflito com a solução da IA
-                full_path = os.path.join(tmpdir, filepath)
-                os.makedirs(os.path.dirname(full_path), exist_ok=True)
-                with open(full_path, "w", encoding="utf-8") as f:
-                    f.write(fixed_content)
+                # 5. Sobrescrever TODOS os arquivos conflitantes antes de commitar
+                for res in resolucoes:
+                    filepath = res["arquivo"]
+                    content = res["codigo_completo"]
+                    full_path = os.path.join(tmpdir, filepath)
+                    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                    with open(full_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    subprocess.run(["git", "add", filepath], cwd=tmpdir, check=True)
+                    print(f"[GitWorker] ✅ Resolução aplicada: {filepath}")
 
-                # 6. Finalizar o merge com um commit real
-                # Como houve um merge iniciado no passo 4, este commit terá 2 PAIS!
-                subprocess.run(["git", "add", filepath], cwd=tmpdir, check=True)
-                subprocess.run(["git", "commit", "-m", f"🤖 IA Auto-fix: Conflito resolvido em {filepath}"], cwd=tmpdir, check=True)
+                # 6. Commit único com todos os arquivos resolvidos (terá 2 pais = merge real)
+                arquivos_str = ", ".join(r["arquivo"] for r in resolucoes)
+                subprocess.run(
+                    ["git", "commit", "-m", f"🤖 IA Auto-fix: Conflitos resolvidos em {arquivos_str}"],
+                    cwd=tmpdir, check=True
+                )
 
                 # 7. Push de volta para o Bitbucket
                 print(f"[GitWorker] 🚀 Enviando resolução (Push) para {source_branch}...")
                 subprocess.run(["git", "push", "origin", source_branch], cwd=tmpdir, check=True, capture_output=True)
-                
+
                 return True
 
             except subprocess.CalledProcessError as e:
