@@ -84,8 +84,11 @@ validation → inline PR comments (or `GitWorker` merge).
 - **`app/services/diff_utils.py`** — unified-diff parsing: file list, valid line anchors, markdown
   fence removal, content truncation.
 - **`app/services/git_worker.py`** — real Git merges in a temp clone. Returns a dict
-  (`sucesso`, `motivo`, `aplicados`, `nao_resolvidos`), aborts the merge when the AI did not cover
-  every unmerged path, and preserves the file's original line endings (CRLF matters in Delphi repos).
+  (`sucesso`, `motivo`, `aplicados`, `nao_resolvidos`, `ignorados`) and preserves the file's original
+  line endings (CRLF matters in Delphi repos). Git's list of unmerged paths is the **only** write
+  authorization, checked both ways: the merge is aborted if the AI missed a conflicted file, and any
+  file the AI returns that Git did **not** flag is discarded without being written. That second check
+  is what keeps the agent from silently "fixing" a semantic conflict — see below.
 - **`app/clients/bitbucket.py`** — Bitbucket REST API 2.0 wrapper (diff, file content, comments,
   commits). Email + app-password basic auth. Every call has a timeout.
 
@@ -142,6 +145,13 @@ defaults, so an older or sloppier model response does not break the pipeline.
 - reject resolutions that still contain Git conflict markers;
 - route blocked extensions (`.dfm`, `.dproj`, ...) and `requer_revisao_humana` to a "needs manual
   merge" list reported in the PR comment.
+
+**Scope rule — conflicts are resolved, semantic conflicts are only flagged.** Auto-merge is triggered
+by Git, never by the AI: `GitWorker.verificar_conflito()` runs a real `git merge --no-commit`, so only
+textual conflicts reach resolution mode. A semantic conflict produces no marker, so the PR goes down
+the clean-code path and is reported as a comment with category `inconsistencia_semantica` — nothing
+is ever committed for it. The `ignorados` guard in `GitWorker` enforces the same rule from the other
+side, and those files are surfaced in the PR comment as "verify manually". Do not relax either half.
 
 There is also a circuit breaker: processing is skipped when the latest commit message on the source
 branch contains `🤖 IA Auto-fix`.

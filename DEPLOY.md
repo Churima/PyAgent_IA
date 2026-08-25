@@ -209,6 +209,7 @@ O agente comenta o motivo no próprio PR. As causas previstas:
 |---|---|
 | `resolucao_incompleta` | A IA não cobriu todos os arquivos que o Git marcou como conflitantes. O merge foi abortado de propósito — commitar assim deixaria marcadores `<<<<<<<` no repositório |
 | `conflito_remanescente` | Ainda havia caminho não mesclado após aplicar as resoluções |
+| Arquivo listado como "verifique manualmente" | A IA quis alterar um arquivo que o Git **não** marcou como conflitante. Nada foi gravado nele. Costuma indicar inconsistência semântica: vale conferir se as mudanças combinadas se encaixam |
 | Extensão bloqueada | `.dfm`, `.dproj` e afins nunca são resolvidos automaticamente |
 | `requer_revisao_humana` | A própria IA se recusou a resolver por falta de contexto de negócio |
 

@@ -260,7 +260,10 @@ layer that:
 *   **drops low-confidence suggestions** and duplicates, and caps the total by severity;
 *   **strips markdown fences of any language** from resolved code before it is committed;
 *   **rejects resolutions that still contain Git conflict markers**;
-*   **aborts the merge** when the AI did not cover every file Git flagged as conflicted, instead of
-    committing a half-resolved tree;
+*   **treats Git's list of unmerged paths as the only write authorization**, checked both ways: the
+    merge is aborted when the AI did not cover every conflicted file, and any file the AI returns
+    that Git did *not* flag is discarded without being written — those are surfaced in the PR comment
+    as "verify manually", because rewriting a file Git merged cleanly would mean auto-resolving a
+    semantic conflict, which this agent deliberately does not do;
 *   **preserves the original line endings** (CRLF in Delphi repositories) so the merge commit diff
     shows only what actually changed.

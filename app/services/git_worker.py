@@ -90,11 +90,23 @@ class GitWorker:
 
         Devolve {"sucesso", "motivo", "aplicados", "nao_resolvidos"}.
 
-        Se a IA não cobriu todos os arquivos que o Git marcou como conflitantes, o
-        merge é abortado: commitar com caminhos ainda em conflito deixaria
-        marcadores `<<<<<<<` dentro do repositório do cliente.
+        A lista de arquivos que o Git marcou como não mesclados é a ÚNICA
+        autorização de escrita, verificada nos dois sentidos:
+
+        - faltou algum arquivo conflitante na resposta da IA? Aborta o merge, porque
+          commitar assim deixaria marcadores `<<<<<<<` no repositório do cliente.
+        - a IA devolveu algum arquivo que NÃO estava em conflito? É descartado sem
+          ser gravado. O Git já mesclou aquele arquivo sozinho; sobrescrevê-lo com
+          conteúdo gerado seria a IA "resolvendo" uma inconsistência semântica por
+          conta própria, que é exatamente o que este agente não deve fazer.
         """
-        resultado = {"sucesso": False, "motivo": "", "aplicados": [], "nao_resolvidos": []}
+        resultado = {
+            "sucesso": False,
+            "motivo": "",
+            "aplicados": [],
+            "nao_resolvidos": [],
+            "ignorados": [],
+        }
 
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
@@ -116,7 +128,28 @@ class GitWorker:
                     return resultado
 
                 conflitantes = self._arquivos_em_conflito(tmpdir)
-                cobertos = {_normalizar(res["arquivo"]) for res in resolucoes}
+                autorizados = {_normalizar(caminho): caminho for caminho in conflitantes}
+
+                # Sentido 1: só passa adiante o que o Git realmente marcou como
+                # conflitante. O caminho usado é o que o Git reportou, não o que a
+                # IA escreveu, para não depender de maiúsculas/barras da resposta.
+                aplicaveis = []
+                for res in resolucoes:
+                    caminho_git = autorizados.get(_normalizar(res["arquivo"]))
+                    if caminho_git is None:
+                        resultado["ignorados"].append(res["arquivo"])
+                        continue
+                    aplicaveis.append({**res, "arquivo": caminho_git})
+
+                if resultado["ignorados"]:
+                    log.warning(
+                        "A IA devolveu %d arquivo(s) que o Git NÃO marcou como conflitante: %s. "
+                        "Descartados sem gravar.",
+                        len(resultado["ignorados"]), ", ".join(resultado["ignorados"]),
+                    )
+
+                # Sentido 2: nenhum arquivo conflitante pode ficar de fora.
+                cobertos = {_normalizar(res["arquivo"]) for res in aplicaveis}
                 faltantes = [caminho for caminho in conflitantes if _normalizar(caminho) not in cobertos]
 
                 if faltantes:
@@ -129,9 +162,9 @@ class GitWorker:
                     resultado["nao_resolvidos"] = faltantes
                     return resultado
 
-                log.info("Conflito confirmado. Aplicando %d resolução(ões) da IA...", len(resolucoes))
+                log.info("Conflito confirmado. Aplicando %d resolução(ões) da IA...", len(aplicaveis))
 
-                for res in resolucoes:
+                for res in aplicaveis:
                     caminho_relativo = res["arquivo"].replace("\\", "/")
                     caminho_absoluto = os.path.join(tmpdir, *caminho_relativo.split("/"))
                     os.makedirs(os.path.dirname(caminho_absoluto), exist_ok=True)

@@ -85,6 +85,7 @@ def registrar_execucao(dados: dict) -> None:
             "num_sugestoes_clean_code": dados.get("num_sugestoes_clean_code", 0),
             "num_descartadas": dados.get("num_descartadas", 0),
             "resolucao_resumo": dados.get("resolucao_resumo", []),
+            "arquivos_ignorados": dados.get("arquivos_ignorados", []),
             "sugestoes_resumo": dados.get("sugestoes_resumo", []),
             "erro_parse": dados.get("erro_parse", False),
             "gitworker_acionado": dados.get("gitworker_acionado", False),

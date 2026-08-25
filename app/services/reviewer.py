@@ -385,7 +385,13 @@ def _processar_conflito(pr_id, pr_diff, source_branch, dest_branch, commit_messa
         analise.get("resolucao_conflito") or [], arquivos_alterados
     )
 
-    resultado_git = {"sucesso": False, "motivo": "nao_acionado", "aplicados": [], "nao_resolvidos": []}
+    resultado_git = {
+        "sucesso": False,
+        "motivo": "nao_acionado",
+        "aplicados": [],
+        "nao_resolvidos": [],
+        "ignorados": [],
+    }
     acionado = False
 
     if not resolucoes:
@@ -406,12 +412,16 @@ def _processar_conflito(pr_id, pr_diff, source_branch, dest_branch, commit_messa
             pr_id, _comentario_conflito(resolucoes, pendentes, resultado_git, analise)
         )
 
+    # O log registra o que foi de fato gravado, não o que a IA propôs.
+    aplicados = resultado_git["aplicados"] if acionado else []
+
     return {
         "tempo_segundos": tempo_segundos,
-        "num_resolucoes": len(resolucoes),
+        "num_resolucoes": len(aplicados),
         "num_sugestoes_clean_code": 0,
-        "num_descartadas": len(pendentes),
-        "resolucao_resumo": [r["arquivo"] for r in resolucoes],
+        "num_descartadas": len(pendentes) + len(resultado_git["ignorados"]),
+        "resolucao_resumo": aplicados,
+        "arquivos_ignorados": resultado_git["ignorados"],
         "sugestoes_resumo": [],
         "erro_parse": analise.get("_erro_parse", False),
         "gitworker_acionado": acionado,
@@ -477,9 +487,13 @@ def _validar_resolucoes(brutas, arquivos_alterados) -> tuple[list, list]:
 
 
 def _comentario_conflito(resolucoes, pendentes, resultado_git, analise) -> str:
+    aplicados = {caminho.replace("\\", "/").lower() for caminho in resultado_git["aplicados"]}
+
     if resultado_git["sucesso"]:
         linhas = ["## 🤖 Conflito resolvido automaticamente", ""]
         for item in resolucoes:
+            if item["arquivo"].replace("\\", "/").lower() not in aplicados:
+                continue
             linhas += [f"**`{item['arquivo']}`** — {item['explicacao']}", ""]
     else:
         linhas = [
@@ -495,6 +509,18 @@ def _comentario_conflito(resolucoes, pendentes, resultado_git, analise) -> str:
             ]
             linhas += [f"- `{caminho}`" for caminho in resultado_git["nao_resolvidos"]]
             linhas.append("")
+
+    if resultado_git["ignorados"]:
+        linhas += [
+            "### ⚠️ Verifique manualmente — possível inconsistência semântica",
+            "",
+            "A IA quis alterar os arquivos abaixo, mas o Git **não** os marcou como conflitantes.",
+            "Nada foi gravado neles: resolver conflito semântico automaticamente não é papel deste",
+            "agente. Vale a pena olhar se as mudanças combinadas realmente se encaixam.",
+            "",
+        ]
+        linhas += [f"- `{caminho}`" for caminho in resultado_git["ignorados"]]
+        linhas.append("")
 
     if pendentes:
         linhas += ["### Requerem merge manual", ""]
