@@ -1,0 +1,119 @@
+; ============================================================================
+;  PyAgent IA — configuração
+;  Copie este arquivo para config.ini e preencha os valores.
+;  O config.ini deve ficar NA MESMA PASTA do executável.
+;  Salve sempre em UTF-8.
+; ============================================================================
+
+[ia]
+; Backend ativo: gemini | claude | mock
+ativa            = gemini
+
+; Chave da Google AI Studio (obrigatória quando ativa = gemini)
+gemini_api_key   =
+gemini_modelo    = gemini-3.1-flash-lite
+
+; Chave da Anthropic (obrigatória quando ativa = claude)
+claude_api_key   =
+claude_modelo    = claude-sonnet-4-20250514
+
+; Tamanho máximo da resposta. Arquivos grandes (.pas com milhares de linhas)
+; precisam de folga aqui, senão o JSON volta truncado.
+max_tokens       = 16000
+
+; 0.0 = determinístico. Não aumente para revisão de código.
+temperatura      = 0.0
+
+; Tempo máximo de espera por resposta da IA, em segundos
+timeout_segundos = 180
+
+; Tentativas em caso de erro temporário (429/503) — com espera progressiva
+tentativas       = 3
+
+; Saída estruturada com schema. Se o modelo escolhido não suportar, o agente
+; refaz a chamada sem o schema automaticamente.
+usar_schema_estrito = true
+
+
+[bitbucket]
+; E-mail da conta Atlassian (usado na autenticação da API REST)
+email     =
+
+; Usuário do Bitbucket (usado na URL de clone do Git — pode ser diferente do e-mail)
+usuario   =
+
+; App password / API token com permissão de leitura e escrita no repositório
+api_token =
+
+; Slug do workspace e do repositório alvo
+workspace =
+repo_slug =
+
+timeout_segundos = 60
+
+
+[servidor]
+host  = 0.0.0.0
+porta = 5000
+
+; Número de requisições simultâneas atendidas pelo waitress
+threads = 4
+
+; Se preenchido, o webhook só aceita requisições que enviem o cabeçalho
+; X-PyAgent-Token com este mesmo valor. Fortemente recomendado ao expor via ngrok.
+token_webhook =
+
+; true  = responde 202 na hora e processa em segundo plano (evita reenvio do Bitbucket)
+; false = processa antes de responder (útil para depurar)
+processamento_assincrono = true
+
+
+[contexto]
+; Pasta, ao lado do executável, com os arquivos .md/.txt que personalizam a IA.
+; Arquivos cujo nome começa com "regras" entram como REGRAS DO PROJETO
+; (prioridade máxima); o restante entra como exemplos de calibração.
+pasta          = ai_context
+
+; Limite de caracteres do contexto enviado à IA (controla custo e tamanho do prompt)
+max_caracteres = 60000
+
+; Linguagem predominante do sistema, usada quando o diff não deixa claro.
+; Valores: delphi | sql | csharp | javascript | python | java | php | c
+linguagem_predominante = delphi
+
+
+[revisao]
+; Máximo de comentários publicados por PR (os de maior severidade têm prioridade)
+max_sugestoes      = 15
+
+; Menor severidade publicada: BLOQUEADOR | ALTO | MEDIO | BAIXO
+severidade_minima  = BAIXO
+
+; Idioma dos comentários postados no PR
+idioma_comentarios = pt-BR
+
+; Publica um comentário de resumo com a tabela de achados antes dos inline
+postar_resumo      = true
+
+; Extensões que a IA NUNCA resolve sozinha (arquivos gerados por IDE ou binários).
+; Conflito nesses arquivos é sinalizado para merge manual.
+extensoes_bloqueadas = .dfm,.dproj,.res,.dpr,.groupproj,.bpl,.dcu
+
+; Corte de arquivos muito grandes antes de enviar à IA
+max_caracteres_arquivo = 80000
+
+
+[git]
+; Deixe vazio para usar o git do PATH.
+; Preencha para apontar para um Git portátil, ex.:
+; executavel = C:\PyAgentIA\mingit\cmd\git.exe
+executavel =
+
+
+[log]
+pasta           = logs
+; DEBUG | INFO | WARNING | ERROR
+nivel           = INFO
+
+; Grava o JSON de cada webhook recebido em debug_payloads/ (use só para depurar)
+salvar_payloads = false

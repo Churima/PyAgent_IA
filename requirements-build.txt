@@ -1,0 +1,3 @@
+# Dependencias apenas para gerar o executavel
+-r requirements.txt
+pyinstaller>=6.11
