@@ -17,7 +17,12 @@ import time
 import requests
 
 from app.clients.ai.base import BaseAIAgent
-from app.clients.ai.prompt_builder import montar_prompt, resposta_vazia, schema_para
+from app.clients.ai.prompt_builder import (
+    detectar_linguagens,
+    montar_prompt,
+    resposta_vazia,
+    schema_para,
+)
 from app.core.logger import obter_logger
 
 log = obter_logger(__name__)
@@ -57,16 +62,19 @@ class GeminiAgent(BaseAIAgent):
         if not self.api_key:
             return resposta_vazia(erro=True, motivo="GEMINI_API_KEY não configurada")
 
+        arquivos_alterados = kwargs.get("arquivos_alterados")
         system_prompt, user_prompt = montar_prompt(
             modo=modo,
             pr_diff=pr_diff,
             commit_messages=commit_messages,
             contexto_arquivos=contexto_arquivos,
-            contexto_extra=self.carregar_contexto(),
-            arquivos_alterados=kwargs.get("arquivos_alterados"),
+            # Só as regras e exemplos do modo em execução — ver base.carregar_contexto.
+            contexto_extra=self.carregar_contexto(modo, detectar_linguagens(arquivos_alterados or [])),
+            arquivos_alterados=arquivos_alterados,
             mapa_ancoras=kwargs.get("mapa_ancoras"),
             source_branch=kwargs.get("source_branch", "origem"),
             dest_branch=kwargs.get("dest_branch", "destino"),
+            contexto_global=kwargs.get("contexto_global"),
         )
 
         resposta = self._chamar_com_degradacao(system_prompt, user_prompt, modo)

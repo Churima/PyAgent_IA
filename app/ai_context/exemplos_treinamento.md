@@ -4,6 +4,38 @@ Estes exemplos mostram o padrão de análise esperado para cada categoria de cen
 Use-os como referência para calibrar suas respostas aos casos reais.
 
 ---
+<!--
+ESCOPO POR MODO - nota para quem mantem este arquivo.
+
+As marcacoes abaixo (comentario HTML com prefixo "pyagent:") dizem em qual modo cada trecho entra
+no prompt. Cada uma vale da linha em que aparece ate a proxima marcacao do arquivo:
+
+    modo=conflito     -> so quando o Git acusou conflito de merge
+    modo=cleancode    -> so na revisao de clean code
+    modo=ambos        -> nos dois (e tambem o padrao de quem nao tem marcacao)
+
+Opcionalmente, "linguagem=delphi,sql" restringe o trecho as linguagens presentes no PR.
+
+Ha mais duas formas de escopar, para material que ja nasce de um modo so:
+
+  - pelo nome do arquivo:  exemplos.conflito.md, regras.cleancode.delphi.md
+  - pela subpasta:         ai_context/conflito/, ai_context/cleancode/delphi/
+
+Precedencia, do mais fraco para o mais forte: subpasta, nome do arquivo, marcador interno.
+Subpasta cujo nome nao seja um modo nem uma linguagem e so organizacao e nao escopa nada.
+
+Use marcador quando o arquivo alterna de modo ou tem trecho compartilhado; use pasta quando o
+arquivo inteiro pertence a um modo so.
+
+Sem isso, o arquivo inteiro ia nos dois modos - e exemplo de resolucao de conflito nao ajuda em
+nada numa revisao de clean code, so ocupa cota de token.
+
+Todo comentario HTML (este inclusive) e descartado antes de montar o prompt: nota de manutencao
+nao custa token nenhum.
+-->
+
+
+<!-- pyagent: modo=conflito -->
 
 ## CATEGORIA 1: CONFLITOS DE MERGE
 
@@ -369,6 +401,8 @@ def calcular_total(valor, percentual):
 
 ---
 
+<!-- pyagent: modo=cleancode -->
+
 ## CATEGORIA 2: PADRÕES DE CÓDIGO
 
 ### EX-PC-11 — Nomes de variáveis pouco descritivos
@@ -548,6 +582,8 @@ def webhook():
 
 ---
 
+<!-- pyagent: modo=ambos -->
+
 ## CATEGORIA 3: CENÁRIOS MISTOS
 
 ### EX-CM-15 — Conflito textual + nome de variável inadequado no trecho conflitante
@@ -710,6 +746,8 @@ cpf_display = f"{cpf[:3]}.{cpf[3:6]}.{cpf[6:9]}-{cpf[9:]}"
 ```
 
 ---
+
+<!-- pyagent: modo=cleancode -->
 
 ## CATEGORIA 4: INCONSISTÊNCIA DE CONTEXTO
 

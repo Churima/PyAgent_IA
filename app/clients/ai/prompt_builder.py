@@ -221,16 +221,40 @@ def _secao_contexto(contexto_extra: dict | None) -> str:
 
 
 def _secao_arquivos(contexto_arquivos: list | None) -> str:
+    """Conteúdo dos arquivos: janelas em torno do diff, ou versões completas.
+
+    No modo de resolução de conflito o arquivo inteiro é obrigatório — a IA
+    devolve `codigo_completo` e qualquer coisa que falte vira perda de código.
+    No modo clean_code o que chega aqui são recortes numerados (`trechos`), o
+    que derruba o tamanho do prompt em cerca de 95% sem perder a âncora: o
+    número exibido é o mesmo que o Bitbucket usa para o comentário inline.
+    """
     if not contexto_arquivos:
-        return "(nenhum conteúdo completo disponível)"
+        return "(nenhum conteúdo disponível)"
 
     partes = []
     for item in contexto_arquivos:
         partes.append(f"\n===== ARQUIVO: {item['arquivo']} =====")
+
+        if item.get("trechos") is not None:
+            total = item.get("total_linhas") or 0
+            incluidas = item.get("linhas_incluidas") or 0
+            partes.append(
+                f"--- TRECHOS ALTERADOS na branch {item.get('nome_origem', 'de origem')} "
+                f"({incluidas} de {total} linhas do arquivo) ---"
+            )
+            partes.append(
+                "Formato: `> NUMERO | codigo`. O `>` marca linha que este PR alterou e "
+                "NUMERO é a linha real do arquivo, própria para o campo \"linha\"."
+            )
+            partes.append(item["trechos"] or "(nenhum trecho)")
+            continue
+
         partes.append(f"--- VERSÃO DESTINO ({item.get('nome_destino', 'branch de destino')}) ---")
         partes.append(item.get("versao_destino") or "(arquivo não existe nesta branch)")
         partes.append(f"--- VERSÃO ORIGEM ({item.get('nome_origem', 'branch do PR')}) ---")
         partes.append(item.get("versao_origem") or "(arquivo não existe nesta branch)")
+
     return "\n".join(partes)
 
 
@@ -271,8 +295,10 @@ Escreva todos os comentários em {idioma}.
 
 ## O QUE NUNCA FAZER
 
-- Nunca comente uma linha que não aparece no diff. O conteúdo completo dos arquivos serve para você
-  ENTENDER o contexto, não para caçar problemas em código que este PR não tocou.
+- Nunca comente uma linha que não aparece no diff. Os trechos vizinhos, o mapa de símbolos e os
+  usos existem para você ENTENDER o contexto, não para caçar problema em código que este PR não
+  tocou. A única exceção é a inconsistência semântica: aí o problema É a relação entre o que mudou
+  e o que ficou como estava — mas o comentário vai na linha alterada, nunca na intocada.
 - Nunca invente caminho de arquivo. Use exatamente os caminhos da lista de arquivos alterados.
 - Nunca use um número de linha fora da lista de âncoras válidas fornecida.
 - Nunca repita a mesma observação em linhas diferentes: agrupe no ponto mais relevante.
@@ -320,11 +346,14 @@ Branch de destino: {dados['dest_branch']}
 ## TAREFA
 
 1. Leia o DIFF para saber exatamente o que mudou.
-2. Use o conteúdo completo dos arquivos para entender o contexto ao redor de cada mudança.
+2. Use os TRECHOS ALTERADOS para entender o contexto ao redor de cada mudança. Eles trazem as
+   linhas vizinhas do arquivo já numeradas; o `>` marca o que este PR alterou.
 3. Aponte problemas de qualidade nas linhas alteradas, seguindo as regras da linguagem.
-4. Compare ativamente as versões de origem e destino procurando inconsistência semântica:
-   - assinatura de função alterada em um arquivo enquanto os chamadores em outros arquivos
-     continuam usando a assinatura antiga;
+4. Procure ativamente inconsistência semântica, cruzando o MAPA DE SÍMBOLOS e os USOS DOS SÍMBOLOS
+   ALTERADOS com o que o diff fez:
+   - assinatura de rotina alterada em um arquivo enquanto os chamadores em outros arquivos
+     continuam usando a assinatura antiga — os USOS mostram exatamente esses pontos de chamada,
+     inclusive em arquivo que este PR não alterou;
    - constante ou configuração redefinida de forma incompatível entre módulos;
    - contrato de interface ou fluxo de controle que se contradiz entre arquivos;
    - lógica duplicada que divergiu entre as branches e agora coexiste inconsistente.
@@ -348,7 +377,21 @@ qualquer outro valor faz o comentário aparecer no lugar errado.
 
 {dados['commits']}
 
-## CONTEÚDO COMPLETO DOS ARQUIVOS
+## MAPA DE SÍMBOLOS DOS ARQUIVOS DO PR
+
+Declarações de cada arquivo com a linha em que estão. Serve para você enxergar a estrutura sem
+receber os arquivos inteiros. Não comente nada só porque aparece aqui.
+
+{dados['mapa_simbolos']}
+
+## USOS DOS SÍMBOLOS ALTERADOS
+
+Pontos onde os identificadores mexidos por este PR são usados nos outros arquivos. É aqui que se
+enxerga o chamador que ficou para trás quando uma assinatura muda.
+
+{dados['referencias']}
+
+## TRECHOS ALTERADOS
 
 {dados['arquivos']}
 
@@ -495,13 +538,37 @@ def montar_prompt(
     mapa_ancoras: dict | None = None,
     source_branch: str = "origem",
     dest_branch: str = "destino",
+    contexto_global: list | None = None,
 ) -> tuple[str, str]:
-    """Devolve (system_prompt, user_prompt) para o modo pedido."""
+    """Devolve (system_prompt, user_prompt) para o modo pedido.
+
+    `contexto_global` é o contexto de TODOS os arquivos do PR, mesmo quando
+    `contexto_arquivos` traz só o lote atual. O mapa de símbolos e os usos são
+    montados a partir dele: é o que permite detectar chamador desatualizado num
+    arquivo que caiu em outro lote, sem enviar o conteúdo dele duas vezes.
+    """
     from app.services.diff_utils import resumir_ancoras
+    from app.services.simbolos import (
+        identificadores_alterados,
+        janelas_de_referencia,
+        montar_mapa_simbolos,
+    )
 
     arquivos = arquivos_alterados or [item["arquivo"] for item in (contexto_arquivos or [])]
+    global_ = contexto_global if contexto_global is not None else contexto_arquivos
+
+    if modo == "resolver_conflito":
+        mapa_simbolos = ""
+        referencias = ""
+    else:
+        mapa_simbolos = montar_mapa_simbolos(global_)
+        referencias = janelas_de_referencia(
+            identificadores_alterados(mapa_ancoras, global_), global_
+        ) or "(nenhum símbolo alterado com uso em outro arquivo do PR)"
 
     dados = {
+        "mapa_simbolos": mapa_simbolos,
+        "referencias": referencias,
         "linguagens": detectar_linguagens(arquivos),
         "idioma": os.getenv("REVISAO_IDIOMA", "pt-BR") or "pt-BR",
         "max_sugestoes": os.getenv("REVISAO_MAX_SUGESTOES", "15"),

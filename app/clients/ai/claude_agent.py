@@ -1,9 +1,9 @@
 """Agente Anthropic Claude.
 
 Adaptado para consumir os prompts unificados do `prompt_builder` e ler modelo,
-limites e timeout do config.ini. O ajuste fino deste backend (uso de tool use
-para saída estruturada, cache de prompt) fica para a próxima rodada — a
-prioridade atual é o Gemini.
+limites e timeout do config.ini. O system prompt vai marcado com `cache_control`
+(ver `_bloco_system`). O que ainda falta aqui é usar tool use para forçar a saída
+estruturada, no lugar do prefill com `{`.
 """
 
 import json
@@ -14,7 +14,7 @@ import time
 import requests
 
 from app.clients.ai.base import BaseAIAgent
-from app.clients.ai.prompt_builder import montar_prompt, resposta_vazia
+from app.clients.ai.prompt_builder import detectar_linguagens, montar_prompt, resposta_vazia
 from app.core.logger import obter_logger
 
 log = obter_logger(__name__)
@@ -32,6 +32,7 @@ class ClaudeAgent(BaseAIAgent):
         self.max_tokens = _inteiro("AI_MAX_TOKENS", 16000)
         self.temperatura = _decimal("AI_TEMPERATURA", 0.0)
         self.tentativas = max(1, _inteiro("AI_TENTATIVAS", 3))
+        self.usar_cache = _booleano("AI_CACHE_PROMPT", True)
 
     def analyze_pr(
         self,
@@ -46,23 +47,26 @@ class ClaudeAgent(BaseAIAgent):
         if not self.api_key:
             return resposta_vazia(erro=True, motivo="CLAUDE_API_KEY não configurada")
 
+        arquivos_alterados = kwargs.get("arquivos_alterados")
         system_prompt, user_prompt = montar_prompt(
             modo=modo,
             pr_diff=pr_diff,
             commit_messages=commit_messages,
             contexto_arquivos=contexto_arquivos,
-            contexto_extra=self.carregar_contexto(),
-            arquivos_alterados=kwargs.get("arquivos_alterados"),
+            # Só as regras e exemplos do modo em execução — ver base.carregar_contexto.
+            contexto_extra=self.carregar_contexto(modo, detectar_linguagens(arquivos_alterados or [])),
+            arquivos_alterados=arquivos_alterados,
             mapa_ancoras=kwargs.get("mapa_ancoras"),
             source_branch=kwargs.get("source_branch", "origem"),
             dest_branch=kwargs.get("dest_branch", "destino"),
+            contexto_global=kwargs.get("contexto_global"),
         )
 
         corpo = {
             "model": self._modelo,
             "max_tokens": self.max_tokens,
             "temperature": self.temperatura,
-            "system": system_prompt,
+            "system": self._bloco_system(system_prompt),
             "messages": [
                 {"role": "user", "content": user_prompt},
                 # Prefill: força a resposta a começar direto no JSON.
@@ -103,6 +107,19 @@ class ClaudeAgent(BaseAIAgent):
             metadados.get("tokens"),
         )
         return resultado
+
+    def _bloco_system(self, texto: str):
+        """System prompt como bloco cacheável.
+
+        O system prompt (regras da linguagem + ai_context) é idêntico entre os
+        lotes de um mesmo PR e entre PRs seguidos. Marcado com `cache_control`,
+        a leitura dele passa a custar uma fração do preço normal. A gravação do
+        cache custa um pouco mais que a leitura comum, então só compensa quando
+        há mais de uma chamada — que é exatamente o caso com o envio em lotes.
+        """
+        if not self.usar_cache:
+            return texto
+        return [{"type": "text", "text": texto, "cache_control": {"type": "ephemeral"}}]
 
     def _enviar(self, corpo: dict):
         cabecalhos = {
@@ -170,14 +187,21 @@ class ClaudeAgent(BaseAIAgent):
 
         texto = "".join(bloco.get("text", "") for bloco in blocos if bloco.get("type") == "text")
         uso = dados.get("usage") or {}
+        cache_gravado = uso.get("cache_creation_input_tokens") or 0
+        cache_lido = uso.get("cache_read_input_tokens") or 0
+        entrada = uso.get("input_tokens") or 0
         metadados = {
             "truncado": dados.get("stop_reason") == "max_tokens",
             "tokens": {
-                "entrada": uso.get("input_tokens"),
+                "entrada": entrada,
                 "saida": uso.get("output_tokens"),
-                "total": (uso.get("input_tokens") or 0) + (uso.get("output_tokens") or 0),
+                "cache_gravado": cache_gravado,
+                "cache_lido": cache_lido,
+                "total": entrada + cache_gravado + cache_lido + (uso.get("output_tokens") or 0),
             },
         }
+        if cache_lido:
+            log.info("Claude: %d token(s) de entrada vieram do cache de prompt.", cache_lido)
         return texto, metadados
 
 
@@ -233,3 +257,12 @@ def _decimal(variavel: str, padrao: float) -> float:
         return float(str(os.getenv(variavel, padrao)).strip().replace(",", "."))
     except (TypeError, ValueError):
         return padrao
+
+
+def _booleano(variavel: str, padrao: bool) -> bool:
+    valor = str(os.getenv(variavel, "")).strip().lower()
+    if valor in ("1", "true", "sim", "yes", "on"):
+        return True
+    if valor in ("0", "false", "nao", "não", "no", "off"):
+        return False
+    return padrao

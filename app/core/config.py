@@ -34,6 +34,9 @@ MAPA_CONFIG: dict[tuple[str, str], tuple[str, str]] = {
     ("ia", "timeout_segundos"): ("AI_TIMEOUT", "180"),
     ("ia", "tentativas"): ("AI_TENTATIVAS", "3"),
     ("ia", "usar_schema_estrito"): ("AI_SCHEMA_ESTRITO", "true"),
+    ("ia", "max_tokens_entrada"): ("AI_MAX_TOKENS_ENTRADA", "60000"),
+    ("ia", "pausa_entre_lotes"): ("AI_PAUSA_ENTRE_LOTES", "2"),
+    ("ia", "usar_cache_prompt"): ("AI_CACHE_PROMPT", "true"),
 
     ("bitbucket", "email"): ("BITBUCKET_EMAIL", ""),
     ("bitbucket", "usuario"): ("BITBUCKET_USERNAME", ""),
@@ -51,6 +54,7 @@ MAPA_CONFIG: dict[tuple[str, str], tuple[str, str]] = {
     ("contexto", "pasta"): ("CONTEXTO_PASTA", "ai_context"),
     ("contexto", "max_caracteres"): ("CONTEXTO_MAX_CARACTERES", "60000"),
     ("contexto", "linguagem_predominante"): ("CONTEXTO_LINGUAGEM", ""),
+    ("contexto", "margem_linhas"): ("CONTEXTO_MARGEM_LINHAS", "40"),
 
     ("revisao", "max_sugestoes"): ("REVISAO_MAX_SUGESTOES", "15"),
     ("revisao", "severidade_minima"): ("REVISAO_SEVERIDADE_MINIMA", "BAIXO"),
@@ -61,6 +65,7 @@ MAPA_CONFIG: dict[tuple[str, str], tuple[str, str]] = {
         ".dfm,.dproj,.res,.dpr,.groupproj,.bpl,.dcu",
     ),
     ("revisao", "max_caracteres_arquivo"): ("REVISAO_MAX_CARACTERES_ARQUIVO", "80000"),
+    ("revisao", "branches_origem_ignoradas"): ("REVISAO_BRANCHES_IGNORADAS", ""),
 
     ("git", "executavel"): ("GIT_EXECUTAVEL", ""),
 

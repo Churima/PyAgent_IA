@@ -8,6 +8,7 @@ cliente: caminho de arquivo inexistente é descartado, número de linha é encai
 numa âncora real do diff e sugestão de baixa confiança não é publicada.
 """
 
+import fnmatch
 import os
 import time
 
@@ -19,7 +20,11 @@ from app.clients.bitbucket import BitbucketClient
 from app.core.logger import obter_logger, registrar_execucao
 from app.services.diff_utils import (
     ajustar_linha,
+    estimar_tokens,
     extrair_arquivos_do_diff,
+    extrair_janelas,
+    filtrar_diff_por_arquivos,
+    filtrar_diff_por_extensao,
     mapear_linhas_validas,
     remover_cercas_markdown,
     truncar_conteudo,
@@ -65,11 +70,48 @@ def _nome_agente(ai_agent) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Filtro de branch de origem                                                   #
+# --------------------------------------------------------------------------- #
+
+def branch_ignorada(source_branch: str) -> str:
+    """Padrão de `[revisao] branches_origem_ignoradas` que casa com a branch, ou "".
+
+    PR de `version` para `master` é promoção de release, não trabalho novo: o
+    código já foi revisado quando entrou na branch de origem. Revisar de novo
+    enche de comentário um PR que ninguém vai tratar como revisão — e, num
+    monorepo, custa a cota de token de centenas de arquivos.
+
+    Aceita curinga (`release/*`) e ignora diferença de maiúsculas. A lista vazia
+    (o padrão) não ignora nada, então instalação existente não muda de
+    comportamento.
+    """
+    nome = (source_branch or "").strip()
+    if not nome:
+        return ""
+
+    for padrao in _lista("REVISAO_BRANCHES_IGNORADAS"):
+        # fnmatchcase com os dois lados em minúscula, porque fnmatch simples
+        # muda de comportamento entre Windows e Linux.
+        if fnmatch.fnmatchcase(nome.lower(), padrao.lower()):
+            return padrao
+
+    return ""
+
+
+# --------------------------------------------------------------------------- #
 # Entrada principal                                                            #
 # --------------------------------------------------------------------------- #
 
 def process_pull_request(pr_id: int, pr_title: str, source_branch: str, dest_branch: str):
     log.info("Iniciando revisão do PR #%s: '%s'", pr_id, pr_title)
+
+    # O webhook já barra antes de abrir a thread; aqui é a mesma regra para quem
+    # chamar esta função direto.
+    padrao = branch_ignorada(source_branch)
+    if padrao:
+        log.info("PR #%s ignorado: branch de origem '%s' casa com '%s' em "
+                 "[revisao] branches_origem_ignoradas.", pr_id, source_branch, padrao)
+        return {"status": "ignorado", "motivo": "branch_origem_ignorada"}
 
     bitbucket = BitbucketClient()
 
@@ -87,11 +129,28 @@ def process_pull_request(pr_id: int, pr_title: str, source_branch: str, dest_bra
         log.error("Diff do PR #%s não encontrado ou vazio.", pr_id)
         return {"status": "erro", "motivo": "diff_nao_encontrado"}
 
+    # O diff ia inteiro para a IA, sem limite nenhum. Num repositório Delphi o
+    # `.dfm` é gerado pela IDE e o diff dele é enorme — e a IA nem pode comentar
+    # nele, porque a extensão é bloqueada. Tirar essas seções aqui economiza
+    # antes de qualquer outra coisa.
+    tamanho_original = len(pr_diff)
+    pr_diff, removidos_do_diff = filtrar_diff_por_extensao(pr_diff, _extensoes_bloqueadas())
+    if removidos_do_diff:
+        log.info(
+            "Removidas do diff %d seção(ões) de extensão bloqueada (%s): %d de %d caracteres.",
+            len(removidos_do_diff), ", ".join(sorted(set(removidos_do_diff))[:5]),
+            tamanho_original - len(pr_diff), tamanho_original,
+        )
+
     arquivos_alterados = extrair_arquivos_do_diff(pr_diff)
     mapa_ancoras = mapear_linhas_validas(pr_diff)
     log.info("Arquivos alterados no PR: %s", ", ".join(arquivos_alterados) or "(nenhum)")
 
-    tem_conflito = GitWorker().verificar_conflito(source_branch, dest_branch)
+    if not arquivos_alterados:
+        log.info("Nada revisável no PR #%s depois do filtro de extensões.", pr_id)
+        return {"status": "ignorado", "motivo": "sem_arquivos_revisaveis"}
+
+    tem_conflito, arquivos_conflito = GitWorker().verificar_conflito(source_branch, dest_branch)
 
     comum = {
         "pr_id": pr_id,
@@ -107,7 +166,7 @@ def process_pull_request(pr_id: int, pr_title: str, source_branch: str, dest_bra
 
     if tem_conflito:
         log.info("Conflito confirmado. Entrando no modo de resolução.")
-        dados_log = _processar_conflito(**comum)
+        dados_log = _processar_conflito(arquivos_conflito=arquivos_conflito, **comum)
     else:
         log.info("PR sem conflito. Entrando no modo de revisão de clean code.")
         dados_log = _processar_clean_code(**comum)
@@ -128,10 +187,26 @@ def process_pull_request(pr_id: int, pr_title: str, source_branch: str, dest_bra
 # Contexto dos arquivos                                                        #
 # --------------------------------------------------------------------------- #
 
-def _montar_contexto(bitbucket, arquivos, source_branch, dest_branch) -> list:
-    """Baixa as duas versões de cada arquivo relevante do PR."""
+def _montar_contexto(bitbucket, arquivos, source_branch, dest_branch,
+                     modo: str = "clean_code", mapa_ancoras: dict | None = None) -> list:
+    """Baixa o conteúdo dos arquivos do PR, no volume que o modo exige.
+
+    `resolver_conflito` precisa das duas versões inteiras: a IA devolve o
+    arquivo completo e o que faltar vira perda de código no commit.
+
+    `clean_code` não precisa. Antes esse modo baixava e enviava as duas versões
+    completas de todo arquivo alterado — num PR de 10 `.pas` isso passava de 300
+    mil tokens de entrada e estourava a cota antes de o modelo ler qualquer
+    coisa. Agora só a versão de origem é baixada, e do texto dela vão para o
+    prompt apenas janelas em volta do que mudou, com a numeração real do arquivo
+    preservada. O conteúdo integral continua em memória porque o mapa de
+    símbolos e a busca de usos (`app/services/simbolos.py`) trabalham sobre ele
+    — mas nunca chega a entrar no prompt.
+    """
     bloqueadas = _extensoes_bloqueadas()
     limite = _inteiro("REVISAO_MAX_CARACTERES_ARQUIVO", 80000)
+    margem = _inteiro("CONTEXTO_MARGEM_LINHAS", 40)
+    ancoras = mapa_ancoras or {}
     contexto = []
 
     for caminho in arquivos:
@@ -143,18 +218,42 @@ def _montar_contexto(bitbucket, arquivos, source_branch, dest_branch) -> list:
         origem, truncou_origem = truncar_conteudo(
             bitbucket.get_file_raw(source_branch, caminho), limite
         )
-        destino, truncou_destino = truncar_conteudo(
-            bitbucket.get_file_raw(dest_branch, caminho), limite
-        )
-        if truncou_origem or truncou_destino:
+
+        if modo == "resolver_conflito":
+            destino, truncou_destino = truncar_conteudo(
+                bitbucket.get_file_raw(dest_branch, caminho), limite
+            )
+            if truncou_origem or truncou_destino:
+                log.warning("Arquivo '%s' truncado por exceder %d caracteres.", caminho, limite)
+            contexto.append({
+                "arquivo": caminho,
+                "versao_origem": origem,
+                "versao_destino": destino,
+                "nome_origem": source_branch,
+                "nome_destino": dest_branch,
+            })
+            continue
+
+        if truncou_origem:
             log.warning("Arquivo '%s' truncado por exceder %d caracteres.", caminho, limite)
+
+        dados = ancoras.get(caminho) or {}
+        alteradas = dados.get("adicionadas") or dados.get("visiveis") or []
+        trechos, incluidas = extrair_janelas(origem, alteradas, margem, destacar=alteradas)
+        total = len(origem.splitlines()) if origem else 0
+
+        if total and incluidas:
+            log.info("Contexto de '%s': %d de %d linhas (%.0f%%).",
+                     caminho, incluidas, total, 100 * incluidas / total)
 
         contexto.append({
             "arquivo": caminho,
+            # Fica só em memória, para o mapa de símbolos e a busca de usos.
             "versao_origem": origem,
-            "versao_destino": destino,
+            "trechos": trechos,
+            "linhas_incluidas": incluidas,
+            "total_linhas": total,
             "nome_origem": source_branch,
-            "nome_destino": dest_branch,
         })
 
     return contexto
@@ -166,20 +265,45 @@ def _montar_contexto(bitbucket, arquivos, source_branch, dest_branch) -> list:
 
 def _processar_clean_code(pr_id, pr_diff, source_branch, dest_branch, commit_messages,
                           arquivos_alterados, mapa_ancoras, ai_agent, bitbucket) -> dict:
-    contexto_arquivos = _montar_contexto(bitbucket, arquivos_alterados, source_branch, dest_branch)
-
-    log.info("Enviando para a IA (modo: clean_code)...")
-    inicio = time.time()
-    analise = ai_agent.analyze_pr(
-        pr_diff=pr_diff,
-        commit_messages=commit_messages,
-        contexto_arquivos=contexto_arquivos,
-        modo="clean_code",
-        arquivos_alterados=arquivos_alterados,
-        mapa_ancoras=mapa_ancoras,
-        source_branch=source_branch,
-        dest_branch=dest_branch,
+    contexto_arquivos = _montar_contexto(
+        bitbucket, arquivos_alterados, source_branch, dest_branch,
+        modo="clean_code", mapa_ancoras=mapa_ancoras,
     )
+
+    lotes = _dividir_em_lotes(contexto_arquivos, pr_diff)
+    inicio = time.time()
+    analises = []
+
+    for indice, lote in enumerate(lotes, start=1):
+        caminhos = [item["arquivo"] for item in lote]
+        diff_lote = filtrar_diff_por_arquivos(pr_diff, caminhos) if len(lotes) > 1 else pr_diff
+
+        if len(lotes) > 1:
+            log.info("Enviando para a IA (modo: clean_code) — lote %d/%d: %s",
+                     indice, len(lotes), ", ".join(caminhos))
+            if indice > 1:
+                # Espaçamento entre chamadas por causa do limite de requisições
+                # por minuto do plano gratuito.
+                time.sleep(_inteiro("AI_PAUSA_ENTRE_LOTES", 2))
+        else:
+            log.info("Enviando para a IA (modo: clean_code)...")
+
+        analises.append(ai_agent.analyze_pr(
+            pr_diff=diff_lote,
+            commit_messages=commit_messages,
+            contexto_arquivos=lote,
+            modo="clean_code",
+            arquivos_alterados=caminhos,
+            mapa_ancoras=mapa_ancoras,
+            source_branch=source_branch,
+            dest_branch=dest_branch,
+            # Mapa de símbolos e usos são montados sobre o PR inteiro, mesmo
+            # quando o lote traz só parte dos arquivos: é isso que preserva a
+            # detecção de chamador desatualizado através da fronteira do lote.
+            contexto_global=contexto_arquivos,
+        ))
+
+    analise = _mesclar_analises(analises)
     tempo_segundos = round(time.time() - inicio, 2)
 
     brutas = analise.get("sugestoes_clean_code") or []
@@ -207,6 +331,8 @@ def _processar_clean_code(pr_id, pr_diff, source_branch, dest_branch, commit_mes
 
     return {
         "tempo_segundos": tempo_segundos,
+        "lotes": len(lotes),
+        "lotes_com_falha": analise.get("_lotes_com_falha", 0),
         "num_resolucoes": 0,
         "num_sugestoes_clean_code": postadas,
         "num_descartadas": descartadas,
@@ -224,6 +350,97 @@ def _processar_clean_code(pr_id, pr_diff, source_branch, dest_branch, commit_mes
         "gitworker_acionado": False,
         "gitworker_sucesso": None,
         "tokens": analise.get("_tokens"),
+    }
+
+
+# Espaço reservado, dentro do orçamento, para o que não depende da quantidade de
+# arquivos do lote: system prompt, regras, exemplos, mapa de símbolos e usos.
+_RESERVA_PROMPT_FIXO = 15000
+
+
+def _dividir_em_lotes(contexto_arquivos: list, pr_diff: str) -> list[list]:
+    """Divide os arquivos em requisições que caibam no orçamento de entrada.
+
+    Um PR grande ia numa chamada só; quando estourava o limite do modelo, o PR
+    inteiro voltava sem nenhuma revisão. Em lotes, cada requisição cabe na cota
+    e um arquivo problemático não derruba os outros.
+    """
+    if not contexto_arquivos:
+        return []
+
+    orcamento = _inteiro("AI_MAX_TOKENS_ENTRADA", 60000)
+    if orcamento <= 0:
+        return [contexto_arquivos]
+
+    disponivel = max(4000, orcamento - _RESERVA_PROMPT_FIXO)
+
+    custos = []
+    for item in contexto_arquivos:
+        diff_arquivo = filtrar_diff_por_arquivos(pr_diff, [item["arquivo"]])
+        custos.append(estimar_tokens(item.get("trechos") or "") + estimar_tokens(diff_arquivo))
+
+    if sum(custos) <= disponivel:
+        return [contexto_arquivos]
+
+    lotes: list[list] = []
+    atual: list = []
+    acumulado = 0
+
+    for item, custo in zip(contexto_arquivos, custos):
+        # Arquivo que sozinho estoura o orçamento vai sozinho: cortá-lo mais já
+        # foi feito em `truncar_conteudo`, e recusar seria pior que tentar.
+        if atual and acumulado + custo > disponivel:
+            lotes.append(atual)
+            atual, acumulado = [], 0
+        atual.append(item)
+        acumulado += custo
+
+    if atual:
+        lotes.append(atual)
+
+    log.info(
+        "PR dividido em %d lote(s): ~%d tokens de conteúdo para um orçamento de %d por requisição.",
+        len(lotes), sum(custos), orcamento,
+    )
+    return lotes
+
+
+def _mesclar_analises(analises: list) -> dict:
+    """Junta o resultado dos lotes numa única análise.
+
+    Um lote que falha não invalida os demais: as sugestões dos que deram certo
+    continuam sendo publicadas, e o erro fica registrado em `_erro_parse`.
+    """
+    if len(analises) == 1:
+        return analises[0]
+
+    tokens: dict[str, int] = {}
+    for analise in analises:
+        for chave, valor in (analise.get("_tokens") or {}).items():
+            if isinstance(valor, (int, float)):
+                tokens[chave] = tokens.get(chave, 0) + int(valor)
+
+    resumos = [str(a.get("resumo_geral") or "").strip() for a in analises]
+    falhas = [a for a in analises if a.get("_erro_parse")]
+
+    if falhas:
+        log.warning("%d de %d lote(s) falharam. As sugestões dos demais seguem para o PR.",
+                    len(falhas), len(analises))
+
+    return {
+        "sugestoes_clean_code": [
+            sugestao
+            for analise in analises
+            for sugestao in (analise.get("sugestoes_clean_code") or [])
+        ],
+        "resolucao_conflito": [],
+        "resumo_geral": " ".join(resumo for resumo in resumos if resumo),
+        "_erro_parse": bool(falhas) and len(falhas) == len(analises),
+        "_motivo_erro": falhas[0].get("_motivo_erro", "") if falhas else "",
+        "_truncado": any(a.get("_truncado") for a in analises),
+        "_tokens": tokens or None,
+        "_lotes": len(analises),
+        "_lotes_com_falha": len(falhas),
     }
 
 
@@ -364,17 +581,28 @@ def _montar_resumo(validas: list, analise: dict, ai_agent, tempo_segundos: float
 # --------------------------------------------------------------------------- #
 
 def _processar_conflito(pr_id, pr_diff, source_branch, dest_branch, commit_messages,
-                        arquivos_alterados, mapa_ancoras, ai_agent, bitbucket) -> dict:
-    contexto_arquivos = _montar_contexto(bitbucket, arquivos_alterados, source_branch, dest_branch)
+                        arquivos_alterados, mapa_ancoras, ai_agent, bitbucket,
+                        arquivos_conflito=None) -> dict:
+    # Só os arquivos que o Git marcou como não mesclados. O modo de conflito
+    # precisa mesmo do arquivo inteiro, então mandar também os que o Git mesclou
+    # sozinho multiplicava o prompt à toa — e ainda dava à IA a chance de
+    # devolver arquivo que o `GitWorker` descartaria depois, em `ignorados`.
+    alvo = _arquivos_para_resolver(arquivos_conflito, arquivos_alterados)
 
-    log.info("Enviando para a IA (modo: resolver_conflito)...")
+    contexto_arquivos = _montar_contexto(
+        bitbucket, alvo, source_branch, dest_branch, modo="resolver_conflito",
+    )
+    diff_conflito = filtrar_diff_por_arquivos(pr_diff, alvo)
+
+    log.info("Enviando para a IA (modo: resolver_conflito) — %d arquivo(s): %s",
+             len(alvo), ", ".join(alvo))
     inicio = time.time()
     analise = ai_agent.analyze_pr(
-        pr_diff=pr_diff,
+        pr_diff=diff_conflito or pr_diff,
         commit_messages=commit_messages,
         contexto_arquivos=contexto_arquivos,
         modo="resolver_conflito",
-        arquivos_alterados=arquivos_alterados,
+        arquivos_alterados=alvo,
         mapa_ancoras=mapa_ancoras,
         source_branch=source_branch,
         dest_branch=dest_branch,
@@ -382,7 +610,7 @@ def _processar_conflito(pr_id, pr_diff, source_branch, dest_branch, commit_messa
     tempo_segundos = round(time.time() - inicio, 2)
 
     resolucoes, pendentes = _validar_resolucoes(
-        analise.get("resolucao_conflito") or [], arquivos_alterados
+        analise.get("resolucao_conflito") or [], alvo
     )
 
     resultado_git = {
@@ -428,6 +656,37 @@ def _processar_conflito(pr_id, pr_diff, source_branch, dest_branch, commit_messa
         "gitworker_sucesso": resultado_git["sucesso"] if acionado else None,
         "tokens": analise.get("_tokens"),
     }
+
+
+def _arquivos_para_resolver(arquivos_conflito, arquivos_alterados) -> list[str]:
+    """Lista final de arquivos do modo de conflito, na grafia que o diff usa.
+
+    O Git reporta o caminho como está no repositório; o diff pode trazer outra
+    caixa. Como `_validar_resolucoes` e o `GitWorker` casam caminho por
+    comparação normalizada, vale usar a grafia do diff quando ela existe.
+    """
+    if not arquivos_conflito:
+        log.warning(
+            "O Git não devolveu a lista de arquivos em conflito. "
+            "Enviando todos os %d arquivo(s) do PR — o prompt fica maior que o necessário.",
+            len(arquivos_alterados),
+        )
+        return list(arquivos_alterados)
+
+    indice = {caminho.replace("\\", "/").lower(): caminho for caminho in arquivos_alterados}
+    alvo: list[str] = []
+
+    for caminho in arquivos_conflito:
+        normalizado = caminho.replace("\\", "/").lower()
+        escolhido = indice.get(normalizado, caminho)
+        if escolhido not in alvo:
+            alvo.append(escolhido)
+
+    fora_do_diff = [c for c in alvo if c.replace("\\", "/").lower() not in indice]
+    if fora_do_diff:
+        log.info("Arquivos em conflito que não aparecem no diff do PR: %s", ", ".join(fora_do_diff))
+
+    return alvo
 
 
 def _validar_resolucoes(brutas, arquivos_alterados) -> tuple[list, list]:
@@ -570,6 +829,11 @@ def _extensoes_bloqueadas() -> set[str]:
         for item in bruto.split(",")
         if item.strip()
     }
+
+
+def _lista(variavel: str) -> list[str]:
+    """Valor separado por vírgula do config.ini, já limpo de espaços e vazios."""
+    return [item.strip() for item in (os.getenv(variavel, "") or "").split(",") if item.strip()]
 
 
 def _inteiro(variavel: str, padrao: int) -> int:

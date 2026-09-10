@@ -34,6 +34,20 @@ tentativas       = 3
 ; refaz a chamada sem o schema automaticamente.
 usar_schema_estrito = true
 
+; Teto de tokens de ENTRADA por requisição. Quando o PR não cabe, os arquivos
+; são divididos em vários lotes em vez de uma chamada só que estoura a cota.
+; Deixe abaixo do limite por minuto do seu plano (o gratuito do Gemini é o caso
+; clássico). 0 desliga a divisão e manda tudo numa requisição.
+max_tokens_entrada = 60000
+
+; Segundos de espera entre um lote e o outro, por causa do limite de
+; requisições por minuto.
+pausa_entre_lotes = 2
+
+; Marca o system prompt como cacheável (Claude). Como o system prompt se repete
+; entre lotes e entre PRs, a leitura dele passa a custar bem menos.
+usar_cache_prompt = true
+
 
 [bitbucket]
 ; E-mail da conta Atlassian (usado na autenticação da API REST)
@@ -81,6 +95,12 @@ max_caracteres = 60000
 ; Valores: delphi | sql | csharp | javascript | python | java | php | c
 linguagem_predominante = delphi
 
+; Linhas de contexto enviadas em volta de cada trecho alterado, na revisão de
+; clean code. O arquivo inteiro NÃO é mais enviado nesse modo — só estas janelas.
+; Aumente se o modelo reclamar de falta de contexto; cada linha a mais custa
+; tokens em todo arquivo do PR.
+margem_linhas = 40
+
 
 [revisao]
 ; Máximo de comentários publicados por PR (os de maior severidade têm prioridade)
@@ -101,6 +121,15 @@ extensoes_bloqueadas = .dfm,.dproj,.res,.dpr,.groupproj,.bpl,.dcu
 
 ; Corte de arquivos muito grandes antes de enviar à IA
 max_caracteres_arquivo = 80000
+
+; Branches de ORIGEM que não devem ser revisadas, separadas por vírgula.
+; PR de `version` para `master` é promoção de release: o código já foi revisado
+; quando entrou na branch de origem, e revisar de novo só enche o PR de
+; comentário repetido. O agente devolve 200 e não faz nada — nem chamada à API
+; do Bitbucket, nem clone, nem consumo de token.
+; Aceita curinga (`release/*`, `hotfix/*`) e ignora maiúsculas/minúsculas.
+; Vazio = revisa qualquer origem.
+branches_origem_ignoradas = version, version_candidate
 
 
 [git]

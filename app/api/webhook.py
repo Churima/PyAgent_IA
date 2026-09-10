@@ -7,7 +7,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request
 
 from app.core.logger import caminho_debug_payloads, obter_logger
-from app.services.reviewer import process_pull_request
+from app.services.reviewer import branch_ignorada, process_pull_request
 
 log = obter_logger(__name__)
 
@@ -47,6 +47,18 @@ def handle_bitbucket_webhook():
         log.warning("Payload de PR incompleto: id=%s source=%s dest=%s",
                     pr_id, source_branch, dest_branch)
         return jsonify({"erro": "Dados do PR incompletos no payload"}), 400
+
+    # Antes de qualquer trabalho: nem thread, nem chamada ao Bitbucket, nem clone.
+    padrao_ignorado = branch_ignorada(source_branch)
+    if padrao_ignorado:
+        log.info("PR #%s ignorado: branch de origem '%s' casa com '%s' em "
+                 "[revisao] branches_origem_ignoradas.", pr_id, source_branch, padrao_ignorado)
+        return jsonify({
+            "status": "ignorado",
+            "motivo": "branch_origem_ignorada",
+            "branch_origem": source_branch,
+            "padrao": padrao_ignorado,
+        }), 200
 
     if not _booleano("WEBHOOK_ASSINCRONO", True):
         resultado = process_pull_request(pr_id, pr_title, source_branch, dest_branch)

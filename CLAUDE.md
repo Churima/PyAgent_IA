@@ -78,12 +78,25 @@ validation → inline PR comments (or `GitWorker` merge).
   `obter_logger(__name__)`; do not add `print()` calls.
 - **`app/api/webhook.py`** — `POST /webhook/bitbucket`. Validates the optional `X-PyAgent-Token`
   header, answers `202` immediately and processes in a background thread (`processamento_assincrono`),
-  and keeps an in-flight PR set so a Bitbucket retry does not process the same PR twice.
+  and keeps an in-flight PR set so a Bitbucket retry does not process the same PR twice. It also
+  short-circuits on `reviewer.branch_ignorada()` before starting the thread, so an ignored source
+  branch costs no API call, no clone and no thread — it answers `200` with
+  `motivo: branch_origem_ignorada`.
 - **`app/services/reviewer.py`** — orchestrator, and the **validation layer** between the AI and the
   PR. See below.
 - **`app/services/diff_utils.py`** — unified-diff parsing: file list, valid line anchors, markdown
-  fence removal, content truncation.
-- **`app/services/git_worker.py`** — real Git merges in a temp clone. Returns a dict
+  fence removal, content truncation. Also the token-reduction helpers: `filtrar_diff_por_extensao()`
+  (drops `.dfm`/`.dproj` sections — the diff used to be sent whole, with no cap at all),
+  `filtrar_diff_por_arquivos()` (per-batch diff), `extrair_janelas()` (windows around each hunk,
+  carrying the file's real line numbers) and `estimar_tokens()`.
+- **`app/services/simbolos.py`** — symbol map and cross-file reference lookup. Windowing the files
+  would otherwise weaken semantic-inconsistency detection: a caller that this PR did *not* touch
+  appears in neither the diff nor the window. `montar_mapa_simbolos()` lists each file's
+  declarations (2-3% of the source size) and `janelas_de_referencia()` greps the changed
+  identifiers across the other files of the PR and returns short excerpts around each use.
+- **`app/services/git_worker.py`** — real Git merges in a temp clone. `verificar_conflito()`
+  returns `(tem_conflito, arquivos_em_conflito)` — the list matters as much as the flag, because
+  only those files need to go to the AI in resolution mode. `resolve_with_merge()` returns a dict
   (`sucesso`, `motivo`, `aplicados`, `nao_resolvidos`, `ignorados`) and preserves the file's original
   line endings (CRLF matters in Delphi repos). Git's list of unmerged paths is the **only** write
   authorization, checked both ways: the merge is aborted if the AI missed a conflicted file, and any
@@ -94,8 +107,13 @@ validation → inline PR comments (or `GitWorker` merge).
 
 **AI layer (`app/clients/ai/`):**
 
-- `base.py` — `BaseAIAgent` ABC, plus `carregar_contexto()` which loads the user-editable
-  `ai_context/` folder (cached by mtime).
+- `base.py` — `BaseAIAgent` ABC, plus `carregar_contexto(modo, linguagens)` which loads the
+  user-editable `ai_context/` folder (cached by mtime) and **filters it by mode**: conflict-
+  resolution rules and examples are not sent on a clean-code review, and vice versa. Scope comes
+  from `<!-- pyagent: modo=... linguagem=... -->` marker lines (each applies until the next one) or
+  from the filename (`exemplos.conflito.md`). Unmarked content still goes to both modes, so an
+  older install keeps working. HTML comments are stripped before the prompt is built — maintainer
+  notes in these files cost nothing.
 - `prompt_builder.py` — **single source of truth for prompts.** Both agents call `montar_prompt()`.
   Never write prompt text inside an agent: the two agents previously had duplicated prompts that
   drifted apart. Contains the per-language rule blocks (Delphi, SQL, C#, JavaScript, Python,
@@ -105,8 +123,10 @@ validation → inline PR comments (or `GitWorker` merge).
   (never in the URL), retry with exponential backoff on 429/5xx, and **progressive degradation**: an
   HTTP 400 causes the request to be retried without `responseSchema`, then without
   `systemInstruction`, instead of failing.
-- `claude_agent.py` — `ClaudeAgent`. Same contract; assistant prefill with `{` to force JSON. Less
-  tuned than the Gemini agent — that work is pending.
+- `claude_agent.py` — `ClaudeAgent`. Same contract; assistant prefill with `{` to force JSON. The
+  system prompt goes as a `cache_control: ephemeral` block (`[ia] usar_cache_prompt`), which pays
+  off because batching means several calls share the same system prompt. Still pending here: tool
+  use for structured output instead of the prefill.
 - `mock.py` — `MockAIAgent`, returns the full contract using real anchors from the PR.
 
 **Adding a new AI backend:** create a class in `app/clients/ai/` extending `BaseAIAgent`, call
@@ -156,12 +176,65 @@ side, and those files are surfaced in the PR comment as "verify manually". Do no
 There is also a circuit breaker: processing is skipped when the latest commit message on the source
 branch contains `🤖 IA Auto-fix`.
 
+**Source-branch filter.** `[revisao] branches_origem_ignoradas` lists source branches that are never
+reviewed — a PR from `version` to `master` is a release promotion whose content was already reviewed
+when it entered the source branch. Matching is by `fnmatch` (so `release/*` works), case-insensitive,
+and an empty list (the default) ignores nothing. The rule lives in `reviewer.branch_ignorada()` and
+is enforced at both the webhook edge and the top of `process_pull_request()`, so calling the service
+function directly is covered too.
+
+## Token budget (do not undo this either)
+
+A 10-file PR used to build a ~640k-token prompt and got rejected by the model's limit before the
+review even started. Four things keep it down; each one has a config knob, none of them may be
+silently reverted:
+
+1. **Clean-code mode never sends whole files.** `_montar_contexto()` fetches only the source-branch
+   version and puts *windows around the hunks* in the prompt (`[contexto] margem_linhas`), with the
+   real destination-file line numbers shown and changed lines flagged with `>`. The full text stays
+   in memory only, for `simbolos.py`. Conflict mode still sends both versions in full — the AI
+   returns `codigo_completo` there and anything missing is lost code.
+2. **Conflict mode only loads the files Git flagged**, from `verificar_conflito()`.
+3. **Blocked extensions are stripped from the diff**, not just from the context.
+4. **A PR that still doesn't fit is split into batches** (`[ia] max_tokens_entrada`), one request
+   per batch, results merged in `_mesclar_analises()`. A batch that fails no longer costs the whole
+   PR its review. The symbol map and cross-file references are built over *all* files and repeated
+   in every batch, which is what preserves semantic detection across batch boundaries.
+
+When touching the prompt, check the effect with a large synthetic PR before assuming it is free:
+the file content, not the instructions, is what dominates the bill.
+
 ## Customization files (`ai_context/`)
 
 Every `.md`/`.txt` in the folder is loaded on each review. Files named `regras*` become **project
 rules with maximum priority** in the prompt; everything else becomes calibration examples. Templates
 live in `app/ai_context/` and are copied next to the executable on first run. `*.example.md` files
 are skipped by the loader.
+
+Content is scoped per mode three ways, weakest to strongest:
+
+1. **Subfolder** — `ai_context/conflito/`, `ai_context/cleancode/delphi/`. The loader walks
+   subdirectories; a path segment naming a mode or a language scopes everything under it, and any
+   other segment (`conflito/fiscal/`) is just organization. Folders starting with `.` or `_` are
+   skipped.
+2. **Filename** — `exemplos.conflito.md`, `regras.cleancode.delphi.md` (dot-separated tokens after
+   the first).
+3. **Marker line inside the file** — `<!-- pyagent: modo=conflito -->`, `modo=cleancode`,
+   `modo=ambos`, optionally `linguagem=delphi,sql`. Valid until the next marker in that file.
+
+Unmarked content goes to both modes, so an install predating this keeps working. Any other HTML
+comment is dropped before the prompt is built, so notes for whoever maintains the file are free.
+`regras*` on the **basename** still decides rules-vs-examples, inside a subfolder too. Sources are
+identified by path relative to `ai_context/`, so `conflito/notas.md` and `cleancode/notas.md` do
+not collide in the PR summary footer.
+
+**Which to use.** Folders for self-contained, single-mode material. Markers for the two big files
+already there: they switch mode five times each, share §1 (system context) between both modes, and
+cite each other by rule identifier across mode boundaries — splitting them into folders would force
+duplicating the shared section and cutting §8 in half. Do not migrate them without re-reading that
+trade-off. Watch for **dangling rule references**: a rule cited from one mode but defined in a block
+scoped to the other silently ships without its definition (this happened to REGRA-05 and REGRA-58;
+both are now `modo=ambos`).
 
 ## Local Development with Ngrok
 

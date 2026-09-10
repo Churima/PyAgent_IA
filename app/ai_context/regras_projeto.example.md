@@ -10,6 +10,36 @@
 > porque a IA cita esse identificador no comentário do PR e isso torna a sugestão auditável.
 
 ---
+<!--
+ESCOPO POR MODO - nota para quem mantem este arquivo.
+
+As marcacoes abaixo (comentario HTML com prefixo "pyagent:") dizem em qual modo cada trecho entra
+no prompt. Cada uma vale da linha em que aparece ate a proxima marcacao do arquivo:
+
+    modo=conflito     -> so quando o Git acusou conflito de merge
+    modo=cleancode    -> so na revisao de clean code
+    modo=ambos        -> nos dois (e tambem o padrao de quem nao tem marcacao)
+
+Opcionalmente, "linguagem=delphi,sql" restringe o trecho as linguagens presentes no PR.
+
+Ha mais duas formas de escopar, para material que ja nasce de um modo so:
+
+  - pelo nome do arquivo:  exemplos.conflito.md, regras.cleancode.delphi.md
+  - pela subpasta:         ai_context/conflito/, ai_context/cleancode/delphi/
+
+Precedencia, do mais fraco para o mais forte: subpasta, nome do arquivo, marcador interno.
+Subpasta cujo nome nao seja um modo nem uma linguagem e so organizacao e nao escopa nada.
+
+Use marcador quando o arquivo alterna de modo ou tem trecho compartilhado; use pasta quando o
+arquivo inteiro pertence a um modo so.
+
+Sem isso, o arquivo inteiro ia nos dois modos - e exemplo de resolucao de conflito nao ajuda em
+nada numa revisao de clean code, so ocupa cota de token.
+
+Todo comentario HTML (este inclusive) e descartado antes de montar o prompt: nota de manutencao
+nao custa token nenhum.
+-->
+
 
 ## 1. Contexto do sistema
 
@@ -20,6 +50,8 @@
 - **O que NÃO pode quebrar em hipótese alguma:** `<módulos críticos: faturamento, fiscal, integração>`.
 
 ---
+
+<!-- pyagent: modo=conflito -->
 
 ## 2. Regras de resolução de conflito
 
@@ -34,6 +66,8 @@
   automaticamente: exigir revisão humana.
 
 ---
+
+<!-- pyagent: modo=cleancode -->
 
 ## 3. Regras de clean code
 
@@ -59,6 +93,8 @@
 - Não comentar formatação (espaçamento, indentação): resolvido pelo formatador da IDE.
 
 ---
+
+<!-- pyagent: modo=ambos -->
 
 ## 5. Exemplos específicos deste sistema
 

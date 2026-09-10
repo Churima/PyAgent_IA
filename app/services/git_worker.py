@@ -56,8 +56,15 @@ class GitWorker:
     # Verificação de conflito                                             #
     # ------------------------------------------------------------------ #
 
-    def verificar_conflito(self, source_branch: str, dest_branch: str) -> bool:
-        """Detecta conflito de merge sem criar commit nem tocar no remoto."""
+    def verificar_conflito(self, source_branch: str, dest_branch: str) -> tuple[bool, list[str]]:
+        """Detecta conflito de merge sem criar commit nem tocar no remoto.
+
+        Devolve (tem_conflito, arquivos_em_conflito). A lista importa tanto
+        quanto o booleano: só esses arquivos precisam ir completos para a IA no
+        modo de resolução. Antes o método devolvia apenas `bool` e o chamador
+        acabava enviando o conteúdo integral de todo arquivo do PR, mesmo os que
+        o Git mesclou sozinho.
+        """
         log.info("Verificando conflito entre '%s' e '%s'", source_branch, dest_branch)
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
@@ -72,14 +79,24 @@ class GitWorker:
                     ["merge", "--no-commit", f"origin/{dest_branch}"], cwd=tmpdir
                 )
                 tem_conflito = resultado.returncode != 0
+                conflitantes = self._arquivos_em_conflito(tmpdir) if tem_conflito else []
+
                 log.info("Resultado da verificação: %s", "CONFLICTED" if tem_conflito else "CLEAN")
-                return tem_conflito
+                if conflitantes:
+                    log.info("Arquivos em conflito segundo o Git: %s", ", ".join(conflitantes))
+                elif tem_conflito:
+                    log.warning(
+                        "Merge falhou mas o Git não listou caminhos não mesclados. "
+                        "O contexto vai incluir todos os arquivos do PR."
+                    )
+
+                return tem_conflito, conflitantes
             except subprocess.CalledProcessError as erro:
                 log.error("Erro na verificação de conflito: %s", self._saida(erro))
-                return False
+                return False, []
             except OSError as erro:
                 log.error("Não foi possível executar o Git ('%s'): %s", self.git, erro)
-                return False
+                return False, []
 
     # ------------------------------------------------------------------ #
     # Resolução                                                           #

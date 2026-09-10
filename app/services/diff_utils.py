@@ -164,3 +164,148 @@ def truncar_conteudo(conteudo: str, max_caracteres: int) -> tuple[str, bool]:
         return conteudo or "", False
     corte = conteudo[:max_caracteres]
     return corte + "\n\n[... arquivo truncado por limite de contexto ...]\n", True
+
+
+# --------------------------------------------------------------------------- #
+# Redução de contexto                                                          #
+# --------------------------------------------------------------------------- #
+#
+# O modo clean_code enviava as DUAS versões completas de todo arquivo alterado.
+# Num PR de 10 `.pas` de porte normal isso passa de 300 mil tokens e estoura a
+# cota antes de o modelo ler qualquer coisa. As funções abaixo trocam o arquivo
+# inteiro por janelas em volta do que mudou, mantendo a numeração real do
+# arquivo de destino para que a âncora do comentário continue exata.
+
+_EXTENSAO = re.compile(r'\.[A-Za-z0-9_]+$')
+
+
+def filtrar_diff_por_extensao(pr_diff: str, extensoes_bloqueadas) -> tuple[str, list[str]]:
+    """Remove do diff os arquivos de extensão bloqueada.
+
+    Em repositório Delphi o `.dfm` é gerado pela IDE e o diff dele é enorme e
+    ilegível para revisão. Ele já era excluído do contexto, mas continuava indo
+    no diff — que é enviado inteiro, sem limite nenhum.
+
+    Devolve (diff_filtrado, arquivos_removidos).
+    """
+    bloqueadas = {
+        item if item.startswith(".") else f".{item}"
+        for item in (extensao.strip().lower() for extensao in (extensoes_bloqueadas or []))
+        if item
+    }
+    if not bloqueadas or not pr_diff:
+        return pr_diff or "", []
+
+    mantidas: list[str] = []
+    removidos: list[str] = []
+    pular = False
+
+    for linha in pr_diff.splitlines(keepends=True):
+        cabecalho = _CABECALHO_ARQUIVO.match(linha.rstrip("\r\n"))
+        if cabecalho:
+            caminho = cabecalho.group("destino").strip().strip('"')
+            encontrado = _EXTENSAO.search(caminho)
+            pular = bool(encontrado) and encontrado.group(0).lower() in bloqueadas
+            if pular:
+                removidos.append(caminho)
+                continue
+        if not pular:
+            mantidas.append(linha)
+
+    return "".join(mantidas), removidos
+
+
+def _agrupar_faixas(linhas, margem: int, total: int) -> list[tuple[int, int]]:
+    """Transforma linhas soltas em faixas [inicio, fim] já expandidas e unidas."""
+    if not linhas:
+        return []
+
+    faixas: list[list[int]] = []
+    for numero in sorted(set(linhas)):
+        inicio = max(1, numero - margem)
+        fim = min(total, numero + margem) if total else numero + margem
+        if faixas and inicio <= faixas[-1][1] + 1:
+            faixas[-1][1] = max(faixas[-1][1], fim)
+        else:
+            faixas.append([inicio, fim])
+    return [(inicio, fim) for inicio, fim in faixas]
+
+
+def extrair_janelas(conteudo: str, linhas_alvo, margem: int = 40,
+                    destacar=None) -> tuple[str, int]:
+    """Recorta o arquivo em torno das linhas de interesse, com numeração real.
+
+    `conteudo` é a versão do arquivo na branch de origem — o mesmo lado que o
+    diff numera como destino (`+++ b/...`), que é também o lado que o Bitbucket
+    usa para ancorar comentário inline. Por isso o número exibido aqui pode ser
+    copiado direto para o campo `linha`.
+
+    Devolve (texto, linhas_incluidas).
+    """
+    if not conteudo:
+        return "(arquivo não disponível nesta branch)", 0
+
+    linhas = conteudo.splitlines()
+    total = len(linhas)
+    faixas = _agrupar_faixas(linhas_alvo, margem, total)
+    if not faixas:
+        return "(nenhum trecho alterado neste arquivo)", 0
+
+    marcadas = set(destacar or ())
+    largura = len(str(total))
+    partes: list[str] = []
+    incluidas = 0
+    anterior_fim = 0
+
+    for inicio, fim in faixas:
+        if inicio > anterior_fim + 1:
+            omitidas = inicio - anterior_fim - 1
+            partes.append(f"    [... {omitidas} linha(s) sem alteração omitida(s) ...]")
+        for numero in range(inicio, min(fim, total) + 1):
+            sinal = ">" if numero in marcadas else " "
+            partes.append(f"{sinal} {str(numero).rjust(largura)} | {linhas[numero - 1]}")
+            incluidas += 1
+        anterior_fim = min(fim, total)
+
+    if anterior_fim < total:
+        partes.append(f"    [... {total - anterior_fim} linha(s) sem alteração omitida(s) ...]")
+
+    return "\n".join(partes), incluidas
+
+
+def estimar_tokens(texto: str) -> int:
+    """Estimativa grosseira de tokens, para orçar o tamanho da requisição.
+
+    Não vale a pena embutir um tokenizador real: cada modelo usa o seu, e aqui
+    só precisamos decidir onde cortar o lote. 3,5 caracteres por token é uma
+    aproximação conservadora para código com acentuação em pt-BR.
+    """
+    return int(len(texto or "") / 3.5) + 1
+
+
+def filtrar_diff_por_arquivos(pr_diff: str, arquivos) -> str:
+    """Mantém no diff apenas as seções dos arquivos indicados.
+
+    Usado ao dividir um PR grande em lotes: sem isso o diff inteiro iria em toda
+    requisição e a divisão em lotes não economizaria nada.
+    """
+    if not pr_diff:
+        return ""
+
+    permitidos = {str(item).replace("\\", "/").strip().lower() for item in (arquivos or ())}
+    if not permitidos:
+        return pr_diff
+
+    mantidas: list[str] = []
+    incluir = False
+
+    for linha in pr_diff.splitlines(keepends=True):
+        cabecalho = _CABECALHO_ARQUIVO.match(linha.rstrip("\r\n"))
+        if cabecalho:
+            destino = cabecalho.group("destino").strip().strip('"').replace("\\", "/").lower()
+            incluir = destino in permitidos
+        if incluir:
+            mantidas.append(linha)
+
+    return "".join(mantidas)
+
