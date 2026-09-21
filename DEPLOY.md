@@ -96,6 +96,25 @@ nssm start PyAgentIA
 Alternativa sem NSSM: Agendador de Tarefas, com gatilho "Ao iniciar o computador", ação apontando
 para o `.exe` e o campo "Iniciar em" preenchido com a pasta do executável.
 
+Rodando como serviço, sem janela, vale desligar o console no `config.ini`:
+
+```ini
+[log]
+console = false
+```
+
+> **Se você rodar numa janela de console, desligue o QuickEdit.** Com ele ligado (o padrão do
+> Windows), um clique acidental dentro da janela põe o console em modo de seleção e prende a
+> escrita no console até alguém desfazer a seleção. Foi o que travou o agente por três dias em
+> 18/09/2026: o serviço aparecia rodando, mas não processava nada, e só voltou quando a janela
+> recebeu atenção — despejando de uma vez os webhooks acumulados. O agente hoje aguenta isso (o
+> console escreve por uma fila à parte e o arquivo de log nunca para), mas a janela continua
+> mostrando informação velha. Desligue em **Propriedades da janela → Modo de edição rápida**, ou:
+>
+> ```powershell
+> Set-ItemProperty -Path 'HKCU:\Console' -Name QuickEdit -Value 0
+> ```
+
 ---
 
 ## 5. Personalizar o agente para o sistema do cliente
@@ -179,6 +198,23 @@ O cabeçalho `X-PyAgent-Token` não bate com `[servidor] token_webhook`. Confira
 Mantenha `[servidor] processamento_assincrono = true`. Assim o agente responde `202` na hora e
 processa em segundo plano, e ainda descarta eventos repetidos do mesmo PR enquanto ele está sendo
 processado.
+
+### O agente está "rodando", mas parou de responder aos webhooks
+
+Olhe o `logs\pyagent.log` e procure um **intervalo longo sem nenhuma linha, terminando numa rajada
+de eventos com o mesmo segundo no carimbo**. Essa assinatura é console travado (veja o aviso sobre
+QuickEdit na seção 4) ou a máquina fora do ar. O arquivo de log não para mais por causa do console,
+então um silêncio total no arquivo hoje aponta para o processo ou o servidor, não para a janela.
+
+Se a rajada aparecer, os PRs dela foram revisados com atraso. O agente não comenta em PR já
+mesclado (ele consulta o estado antes), então o que estava fechado é simplesmente pulado, com
+`estado 'MERGED'` no log.
+
+### Revisão demorando quando vários PRs são abertos juntos
+
+Normal: `[servidor] revisoes_simultaneas` (padrão `2`) faz os PRs excedentes esperarem a vez, em vez
+de abrir um clone do repositório e uma chamada à IA para cada um ao mesmo tempo. O log mostra
+`PR #N na fila`. Aumente o valor se o servidor tiver folga de disco, rede e cota de API.
 
 ### `Falha ao buscar diff: 401`
 

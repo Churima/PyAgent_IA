@@ -73,9 +73,17 @@ validation → inline PR comments (or `GitWorker` merge).
   must be able to edit goes through `diretorio_base()`; never use `__file__` for those, because
   under PyInstaller it points at a temp directory that is deleted on exit.
 - **`app/core/config.py`** — INI layer described above.
-- **`app/core/logger.py`** — `configurar_logging()` (console + `RotatingFileHandler`, UTF-8 forced
+- **`app/core/logger.py`** — `configurar_logging()` (`RotatingFileHandler` + console, UTF-8 forced
   for the Windows console) and `registrar_execucao()` (structured per-PR JSON record). Use
-  `obter_logger(__name__)`; do not add `print()` calls.
+  `obter_logger(__name__)`; do not add `print()` calls. **The console handler sits behind a
+  `QueueListener`** (`_ConsoleNaoBloqueante`) and the file handler is registered first — do not
+  wire a bare `StreamHandler` onto the root logger again. With QuickEdit on (the Windows default),
+  one click inside the console window parks `WriteFile` on the console handle; the blocked thread
+  held the handler lock and every other thread stopped with it, which froze the whole service for
+  three days (2026-09-18 09:18 → 2026-09-21 09:01) while Bitbucket deliveries piled up in the
+  socket backlog. Now the worst case is a stale window: the queue fills, console lines are dropped,
+  the file log and the service keep going. `[log] console = false` drops the console entirely, for
+  running as a service or scheduled task.
 - **`app/api/webhook.py`** — `POST /webhook/bitbucket`. Validates the optional `X-PyAgent-Token`
   header, answers `202` immediately and processes in a background thread (`processamento_assincrono`),
   and keeps an in-flight PR set so a Bitbucket retry does not process the same PR twice. It also
@@ -83,7 +91,11 @@ validation → inline PR comments (or `GitWorker` merge).
   branch costs no API call, no clone and no thread — it answers `200` with
   `motivo: branch_origem_ignorada`.
 - **`app/services/reviewer.py`** — orchestrator, and the **validation layer** between the AI and the
-  PR. See below.
+  PR. See below. Two guards run before any work: the PR must be `OPEN` (`get_pr_state`), and
+  `_vaga_de_revisao()` caps concurrent reviews at `[servidor] revisoes_simultaneas`. The webhook
+  opens one thread per PR, so without that cap a released backlog started 13 monorepo clones and 13
+  AI calls in the same second. A PR waiting for a slot stays in the webhook's in-flight set, so
+  Bitbucket retries are still deduplicated.
 - **`app/services/diff_utils.py`** — unified-diff parsing: file list, valid line anchors, markdown
   fence removal, content truncation. Also the token-reduction helpers: `filtrar_diff_por_extensao()`
   (drops `.dfm`/`.dproj` sections — the diff used to be sent whole, with no cap at all),
@@ -175,6 +187,22 @@ side, and those files are surfaced in the PR comment as "verify manually". Do no
 
 There is also a circuit breaker: processing is skipped when the latest commit message on the source
 branch contains `🤖 IA Auto-fix`.
+
+**Stale-PR guards.** `/pullrequests/{id}/diff` answers `200` on a merged PR, so without a state
+check the whole pipeline ran and commented on closed PRs — that is how PR #2580 got reviewed after
+its branch had been deleted, with all ten files returning `404` and the review built from the diff
+alone. Two guards now cover it: `process_pull_request()` aborts unless `get_pr_state()` says `OPEN`
+(an API failure returns `""` and is treated as "carry on" — a transient error must not stop
+reviews), and `_processar_clean_code()` aborts when *every* file came back empty, rather than
+publishing a review with no windows and no symbol map.
+
+**Clean code after a conflict.** A conflict PR used to get no code review at all, because conflict
+mode only returns `resolucao_conflito`. `_clean_code_apos_conflito()` now makes a second, separate
+AI request (`[revisao] revisar_apos_conflito`); being a new request, it also starts with the full
+`[ia] max_tokens_entrada` budget instead of competing with the whole-file payload conflict mode
+must send. When `GitWorker` pushed the merge, the diff is **re-fetched and the anchor map rebuilt**
+before that pass — `inline.to` is a destination-file line number, so commenting with the pre-merge
+map would land the suggestions on the wrong lines.
 
 **Source-branch filter.** `[revisao] branches_origem_ignoradas` lists source branches that are never
 reviewed — a PR from `version` to `master` is a release promotion whose content was already reviewed

@@ -20,6 +20,35 @@ class BitbucketClient:
         self.auth = (self.email, self.token)
         self.timeout = _inteiro("BITBUCKET_TIMEOUT", 60)
 
+    def get_pr_state(self, pr_id: int) -> str:
+        """Estado do PR: OPEN, MERGED, DECLINED, SUPERSEDED, NAO_ENCONTRADO ou "".
+
+        Devolve "" quando não deu para descobrir (rede fora, 5xx, token sem
+        permissão). Quem chama trata isso como "siga em frente": uma falha
+        passageira de API não pode ser motivo para parar de revisar.
+        """
+        url = f"{self.base_url}/pullrequests/{pr_id}"
+
+        try:
+            resposta = requests.get(url, auth=self.auth, timeout=self.timeout)
+        except requests.RequestException as erro:
+            log.warning("Falha de rede ao consultar o estado do PR #%s: %s", pr_id, erro)
+            return ""
+
+        if resposta.status_code == 200:
+            try:
+                return str((resposta.json() or {}).get("state") or "").upper()
+            except ValueError:
+                log.warning("Resposta não-JSON ao consultar o estado do PR #%s.", pr_id)
+                return ""
+
+        if resposta.status_code == 404:
+            return "NAO_ENCONTRADO"
+
+        log.warning("Falha ao consultar o estado do PR #%s: HTTP %s",
+                    pr_id, resposta.status_code)
+        return ""
+
     def get_pr_diff(self, pr_id: int) -> str:
         log.info("Buscando diff do PR #%s", pr_id)
         url = f"{self.base_url}/pullrequests/{pr_id}/diff"

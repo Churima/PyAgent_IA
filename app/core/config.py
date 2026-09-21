@@ -50,6 +50,7 @@ MAPA_CONFIG: dict[tuple[str, str], tuple[str, str]] = {
     ("servidor", "threads"): ("SERVER_THREADS", "4"),
     ("servidor", "token_webhook"): ("WEBHOOK_TOKEN", ""),
     ("servidor", "processamento_assincrono"): ("WEBHOOK_ASSINCRONO", "true"),
+    ("servidor", "revisoes_simultaneas"): ("REVISOES_SIMULTANEAS", "2"),
 
     ("contexto", "pasta"): ("CONTEXTO_PASTA", "ai_context"),
     ("contexto", "max_caracteres"): ("CONTEXTO_MAX_CARACTERES", "60000"),
@@ -66,11 +67,13 @@ MAPA_CONFIG: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("revisao", "max_caracteres_arquivo"): ("REVISAO_MAX_CARACTERES_ARQUIVO", "80000"),
     ("revisao", "branches_origem_ignoradas"): ("REVISAO_BRANCHES_IGNORADAS", ""),
+    ("revisao", "revisar_apos_conflito"): ("REVISAO_APOS_CONFLITO", "true"),
 
     ("git", "executavel"): ("GIT_EXECUTAVEL", ""),
 
     ("log", "pasta"): ("LOG_PASTA", "logs"),
     ("log", "nivel"): ("LOG_NIVEL", "INFO"),
+    ("log", "console"): ("LOG_CONSOLE", "true"),
     ("log", "salvar_payloads"): ("LOG_SALVAR_PAYLOADS", "false"),
 }
 

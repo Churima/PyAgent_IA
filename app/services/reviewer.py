@@ -10,7 +10,9 @@ numa âncora real do diff e sugestão de baixa confiança não é publicada.
 
 import fnmatch
 import os
+import threading
 import time
+from contextlib import contextmanager
 
 from app.clients.ai.claude_agent import ClaudeAgent
 from app.clients.ai.gemini_agent import GeminiAgent
@@ -115,6 +117,22 @@ def process_pull_request(pr_id: int, pr_title: str, source_branch: str, dest_bra
 
     bitbucket = BitbucketClient()
 
+    # --- PR precisa estar aberto ---
+    # O endpoint de diff responde 200 mesmo num PR já mesclado, então sem esta
+    # consulta o fluxo seguia inteiro e publicava comentário em PR fechado. Foi
+    # o que aconteceu com o PR #2580 quando o serviço destravou depois de três
+    # dias congelado: a branch de origem já tinha sido apagada, os dez arquivos
+    # voltaram 404 e a revisão foi publicada mesmo assim, só com o diff.
+    estado = bitbucket.get_pr_state(pr_id)
+    if estado and estado != "OPEN":
+        log.info("PR #%s ignorado: estado '%s' (só PR aberto é revisado).", pr_id, estado)
+        return {"status": "ignorado", "motivo": "pr_nao_aberto", "estado": estado}
+
+    with _vaga_de_revisao(pr_id):
+        return _revisar(pr_id, bitbucket, source_branch, dest_branch)
+
+
+def _revisar(pr_id: int, bitbucket, source_branch: str, dest_branch: str):
     # --- CIRCUIT BREAKER: não reagir ao próprio commit ---
     commit_messages = bitbucket.get_recent_commit_messages(source_branch)
     if commit_messages and "🤖 IA Auto-fix" in commit_messages[0]:
@@ -167,6 +185,11 @@ def process_pull_request(pr_id: int, pr_title: str, source_branch: str, dest_bra
     if tem_conflito:
         log.info("Conflito confirmado. Entrando no modo de resolução.")
         dados_log = _processar_conflito(arquivos_conflito=arquivos_conflito, **comum)
+
+        if _booleano("REVISAO_APOS_CONFLITO", True):
+            dados_log = _mesclar_dados_log(
+                dados_log, _clean_code_apos_conflito(comum, dados_log)
+            )
     else:
         log.info("PR sem conflito. Entrando no modo de revisão de clean code.")
         dados_log = _processar_clean_code(**comum)
@@ -181,6 +204,126 @@ def process_pull_request(pr_id: int, pr_title: str, source_branch: str, dest_bra
 
     log.info("Processamento do PR #%s finalizado.", pr_id)
     return {"status": "sucesso", "conflito": tem_conflito}
+
+
+# --------------------------------------------------------------------------- #
+# Limite de revisões simultâneas                                               #
+# --------------------------------------------------------------------------- #
+
+_semaforo_revisoes: threading.BoundedSemaphore | None = None
+_limite_revisoes = 0
+_trava_semaforo = threading.Lock()
+
+
+def _obter_semaforo() -> threading.BoundedSemaphore:
+    # Preguiçoso de propósito: o config.ini só é lido depois deste import.
+    global _semaforo_revisoes, _limite_revisoes
+    with _trava_semaforo:
+        if _semaforo_revisoes is None:
+            _limite_revisoes = max(1, _inteiro("REVISOES_SIMULTANEAS", 2))
+            _semaforo_revisoes = threading.BoundedSemaphore(_limite_revisoes)
+            log.info("Limite de revisões simultâneas: %d", _limite_revisoes)
+    return _semaforo_revisoes
+
+
+@contextmanager
+def _vaga_de_revisao(pr_id: int):
+    """Enfileira a revisão em vez de deixar o PR abrir mais uma thread livre.
+
+    O webhook abre uma thread por PR. Quando o serviço destravou depois do
+    congelamento de três dias, 13 PRs entraram no mesmo segundo — 13 clones do
+    monorepo e 13 chamadas à IA ao mesmo tempo, disputando disco, rede e cota.
+    O PR continua marcado como em processamento enquanto espera, então o
+    reenvio do Bitbucket segue sendo descartado como duplicado.
+    """
+    semaforo = _obter_semaforo()
+
+    if not semaforo.acquire(blocking=False):
+        log.info("PR #%s na fila: as %d vaga(s) de revisão simultânea estão ocupadas.",
+                 pr_id, _limite_revisoes)
+        semaforo.acquire()
+
+    try:
+        yield
+    finally:
+        semaforo.release()
+
+
+# --------------------------------------------------------------------------- #
+# Revisão de código depois da resolução de conflito                            #
+# --------------------------------------------------------------------------- #
+
+def _clean_code_apos_conflito(comum: dict, dados_conflito: dict) -> dict | None:
+    """Segunda requisição à IA: revisa o código depois de resolver o conflito.
+
+    Um PR com conflito saía sem nenhuma revisão de clean code, porque o modo de
+    conflito só devolve `resolucao_conflito`. Como esta é uma chamada nova, ela
+    também começa com o orçamento de entrada inteiro
+    (`[ia] max_tokens_entrada`) em vez de disputar espaço com os arquivos
+    completos que o modo de conflito é obrigado a enviar.
+    """
+    pr_id = comum["pr_id"]
+    entrada = dict(comum)
+
+    # O merge foi empurrado para a branch de origem: o diff do PR mudou e o mapa
+    # de âncoras antigo aponta para as linhas erradas. Como `inline.to` é número
+    # de linha do arquivo de destino, comentar com o mapa velho colocaria a
+    # sugestão em cima de outro trecho.
+    if dados_conflito.get("gitworker_sucesso"):
+        log.info("Merge publicado; rebuscando o diff do PR #%s antes da revisão de código.", pr_id)
+        atualizado = _recarregar_diff(comum["bitbucket"], pr_id)
+        if atualizado is None:
+            log.warning("Não foi possível recarregar o diff do PR #%s. Revisão de "
+                        "código depois do conflito cancelada.", pr_id)
+            return None
+        entrada.update(atualizado)
+
+    if not entrada["arquivos_alterados"]:
+        log.info("Nada revisável no PR #%s depois da resolução do conflito.", pr_id)
+        return None
+
+    log.info("Conflito tratado. Segunda passada: revisão de clean code do PR #%s.", pr_id)
+    return _processar_clean_code(**entrada)
+
+
+def _recarregar_diff(bitbucket, pr_id: int) -> dict | None:
+    pr_diff = bitbucket.get_pr_diff(pr_id)
+    if not pr_diff:
+        return None
+
+    pr_diff, _ = filtrar_diff_por_extensao(pr_diff, _extensoes_bloqueadas())
+    return {
+        "pr_diff": pr_diff,
+        "arquivos_alterados": extrair_arquivos_do_diff(pr_diff),
+        "mapa_ancoras": mapear_linhas_validas(pr_diff),
+    }
+
+
+def _mesclar_dados_log(conflito: dict, clean: dict | None) -> dict:
+    """Junta as duas passadas num registro só, somando tokens e tempo."""
+    if not clean:
+        return conflito
+
+    tokens: dict[str, int] = {}
+    for parcela in (conflito.get("tokens"), clean.get("tokens")):
+        for chave, valor in (parcela or {}).items():
+            if isinstance(valor, (int, float)):
+                tokens[chave] = tokens.get(chave, 0) + int(valor)
+
+    return {
+        **conflito,
+        "tempo_segundos": round(
+            (conflito.get("tempo_segundos") or 0) + (clean.get("tempo_segundos") or 0), 2
+        ),
+        "lotes": clean.get("lotes", 0),
+        "lotes_com_falha": clean.get("lotes_com_falha", 0),
+        "num_sugestoes_clean_code": clean.get("num_sugestoes_clean_code", 0),
+        "num_descartadas": (conflito.get("num_descartadas") or 0)
+        + (clean.get("num_descartadas") or 0),
+        "sugestoes_resumo": clean.get("sugestoes_resumo") or [],
+        "erro_parse": bool(conflito.get("erro_parse")) or bool(clean.get("erro_parse")),
+        "tokens": tokens or None,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -270,6 +413,18 @@ def _processar_clean_code(pr_id, pr_diff, source_branch, dest_branch, commit_mes
         modo="clean_code", mapa_ancoras=mapa_ancoras,
     )
 
+    # Nenhum arquivo voltou com conteúdo: a branch de origem sumiu (apagada
+    # depois do merge, renomeada) ou o token perdeu acesso. Revisar assim
+    # significa mandar só o diff, sem janela de contexto e sem mapa de símbolos
+    # — a pior revisão possível, e ela ainda seria publicada como se valesse.
+    if contexto_arquivos and not any(item.get("versao_origem") for item in contexto_arquivos):
+        log.warning(
+            "Nenhum dos %d arquivo(s) do PR #%s pôde ser lido na branch '%s'. "
+            "Revisão cancelada em vez de analisar só o diff.",
+            len(contexto_arquivos), pr_id, source_branch,
+        )
+        return _dados_log_sem_revisao("contexto_indisponivel")
+
     lotes = _dividir_em_lotes(contexto_arquivos, pr_diff)
     inicio = time.time()
     analises = []
@@ -350,6 +505,25 @@ def _processar_clean_code(pr_id, pr_diff, source_branch, dest_branch, commit_mes
         "gitworker_acionado": False,
         "gitworker_sucesso": None,
         "tokens": analise.get("_tokens"),
+    }
+
+
+def _dados_log_sem_revisao(motivo: str) -> dict:
+    """Registro de execução de uma revisão que foi abortada antes da IA."""
+    return {
+        "tempo_segundos": 0,
+        "lotes": 0,
+        "lotes_com_falha": 0,
+        "num_resolucoes": 0,
+        "num_sugestoes_clean_code": 0,
+        "num_descartadas": 0,
+        "resolucao_resumo": [],
+        "sugestoes_resumo": [],
+        "erro_parse": False,
+        "motivo_sem_revisao": motivo,
+        "gitworker_acionado": False,
+        "gitworker_sucesso": None,
+        "tokens": None,
     }
 
 

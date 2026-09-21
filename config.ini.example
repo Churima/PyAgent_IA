@@ -81,6 +81,12 @@ token_webhook =
 ; false = processa antes de responder (útil para depurar)
 processamento_assincrono = true
 
+; Quantos PRs são revisados ao mesmo tempo. Cada revisão clona o repositório e
+; chama a IA, então sem esse teto uma rajada de webhooks (vários PRs criados
+; juntos, ou uma fila represada) abre um clone e uma chamada por PR de uma vez.
+; Os demais esperam a vez — nada é perdido.
+revisoes_simultaneas = 2
+
 
 [contexto]
 ; Pasta, ao lado do executável, com os arquivos .md/.txt que personalizam a IA.
@@ -131,6 +137,13 @@ max_caracteres_arquivo = 80000
 ; Vazio = revisa qualquer origem.
 branches_origem_ignoradas = version, version_candidate
 
+; Depois de resolver um conflito, faz uma SEGUNDA chamada à IA para revisar o
+; clean code do PR. Antes, um PR com conflito saía sem nenhuma revisão de
+; código. Como é uma requisição nova, ela começa com o orçamento de
+; `[ia] max_tokens_entrada` inteiro, em vez de dividir espaço com os arquivos
+; completos que o modo de conflito precisa enviar.
+revisar_apos_conflito = true
+
 
 [git]
 ; Deixe vazio para usar o git do PATH.
@@ -143,6 +156,13 @@ executavel =
 pasta           = logs
 ; DEBUG | INFO | WARNING | ERROR
 nivel           = INFO
+
+; Escreve o log também na janela do console. A escrita é feita por uma thread
+; separada e nunca segura o serviço: se o console travar (QuickEdit do Windows
+; deixa a janela em modo de seleção a um clique de distância), as linhas do
+; console são descartadas e o arquivo de log continua normalmente.
+; Desligue quando rodar como serviço ou tarefa agendada, sem janela.
+console         = true
 
 ; Grava o JSON de cada webhook recebido em debug_payloads/ (use só para depurar)
 salvar_payloads = false
