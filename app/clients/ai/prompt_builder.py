@@ -234,7 +234,10 @@ def _secao_arquivos(contexto_arquivos: list | None) -> str:
 
     partes = []
     for item in contexto_arquivos:
-        partes.append(f"\n===== ARQUIVO: {item['arquivo']} =====")
+        # Só o modo de conflito leva a codificação: é o único em que o texto da
+        # IA volta para o repositório e precisa caber nela.
+        encoding = f" (codificação: {item['encoding']})" if item.get("encoding") else ""
+        partes.append(f"\n===== ARQUIVO: {item['arquivo']}{encoding} =====")
 
         if item.get("trechos") is not None:
             total = item.get("total_linhas") or 0
@@ -458,7 +461,12 @@ logicamente incompatíveis — e nesse caso explique por quê.
 3. O código NÃO pode conter cerca markdown (```). O campo é código puro.
 4. Não "melhore" código fora da região do conflito. Refatoração oportunista dentro de um merge
    automático é indefensável em revisão e mascara o que de fato mudou.
-5. Preserve indentação, quebras de linha e codificação originais do arquivo.
+5. Preserve indentação e quebras de linha originais do arquivo. A codificação de cada arquivo vem
+   no cabeçalho dele e o seu texto será gravado nela. Se não for UTF-8, use apenas caracteres que
+   ela representa: os acentos do português existem em windows-1252, mas setas, símbolos
+   matemáticos, `✓` e emoji não — e um único caractere desses manda o arquivo para merge manual.
+   Mantenha acentos e caracteres especiais do código exatamente como estão; não os troque por
+   equivalentes sem acento.
 6. Se as duas versões adicionam itens a uma lista (cláusula `uses`, imports, constantes,
    dependências), a resolução correta é UNIR os dois conjuntos sem duplicatas.
 7. Se você não tem certeza de qual comportamento é o correto, ou se resolver exigiria conhecimento

@@ -19,6 +19,7 @@ from app.clients.ai.gemini_agent import GeminiAgent
 from app.clients.ai.mock import MockAIAgent
 from app.clients.ai.prompt_builder import EMOJI_SEVERIDADE, ORDEM_SEVERIDADE
 from app.clients.bitbucket import BitbucketClient
+from app.core.encoding import rotulo_encoding
 from app.core.logger import obter_logger, registrar_execucao
 from app.services.diff_utils import (
     ajustar_linha,
@@ -358,14 +359,12 @@ def _montar_contexto(bitbucket, arquivos, source_branch, dest_branch,
             continue
 
         log.info("Capturando contexto do arquivo: %s", caminho)
-        origem, truncou_origem = truncar_conteudo(
-            bitbucket.get_file_raw(source_branch, caminho), limite
-        )
+        texto_origem, encoding_origem = bitbucket.get_file(source_branch, caminho)
+        origem, truncou_origem = truncar_conteudo(texto_origem, limite)
 
         if modo == "resolver_conflito":
-            destino, truncou_destino = truncar_conteudo(
-                bitbucket.get_file_raw(dest_branch, caminho), limite
-            )
+            texto_destino, encoding_destino = bitbucket.get_file(dest_branch, caminho)
+            destino, truncou_destino = truncar_conteudo(texto_destino, limite)
             if truncou_origem or truncou_destino:
                 log.warning("Arquivo '%s' truncado por exceder %d caracteres.", caminho, limite)
             contexto.append({
@@ -374,6 +373,9 @@ def _montar_contexto(bitbucket, arquivos, source_branch, dest_branch,
                 "versao_destino": destino,
                 "nome_origem": source_branch,
                 "nome_destino": dest_branch,
+                # O merge é feito sobre a branch de origem, então é a codificação
+                # dela que o GitWorker vai usar para gravar.
+                "encoding": rotulo_encoding(encoding_origem if texto_origem else encoding_destino),
             })
             continue
 
@@ -483,6 +485,10 @@ def _processar_clean_code(pr_id, pr_diff, source_branch, dest_branch, commit_mes
 
     if not validas:
         log.info("Nenhuma sugestão de clean code publicável para o PR #%s.", pr_id)
+        if _booleano("REVISAO_COMENTAR_SEM_SUGESTOES", True):
+            comentario = _comentario_sem_sugestoes(analise, ai_agent, tempo_segundos, descartadas)
+            if comentario:
+                bitbucket.post_comment(pr_id, comentario)
 
     return {
         "tempo_segundos": tempo_segundos,
@@ -735,8 +741,58 @@ def _montar_resumo(validas: list, analise: dict, ai_agent, tempo_segundos: float
             f"{EMOJI_SEVERIDADE[item['severidade']]} {item['severidade']} | {titulo} |"
         )
 
+    linhas += _rodape_revisao(analise, ai_agent, tempo_segundos)
+    return "\n".join(linhas)
+
+
+def _comentario_sem_sugestoes(analise: dict, ai_agent, tempo_segundos: float,
+                              descartadas: int) -> str | None:
+    """Comentário para a revisão que terminou sem nada a apontar.
+
+    Sem ele o PR ficava em silêncio, e silêncio não distingue "revisei e está
+    tudo certo" de "nem cheguei a revisar". Por isso mesmo, quando TODOS os
+    lotes falharam, não há comentário: afirmar "sem sugestões" sobre código que
+    a IA não leu seria pior que o silêncio.
+    """
+    if analise.get("_erro_parse"):
+        log.warning("Revisão sem resposta válida da IA (%s). Comentário 'sem sugestões' "
+                    "não publicado.", analise.get("_motivo_erro") or "motivo desconhecido")
+        return None
+
+    linhas = [
+        "## 🤖 Revisão automática — PyAgent IA",
+        "",
+        "✅ **Sem sugestões de código.** A revisão não encontrou pontos de clean code "
+        "para comentar nas alterações deste PR.",
+        "",
+    ]
+
+    resumo_geral = str(analise.get("resumo_geral") or "").strip()
+    if resumo_geral:
+        linhas += [resumo_geral, ""]
+
+    falhas = analise.get("_lotes_com_falha") or 0
+    if falhas:
+        linhas.append(
+            f"> ⚠️ {falhas} de {analise.get('_lotes', falhas)} lote(s) de arquivos falharam na IA "
+            "e não foram revisados — a ausência de sugestões vale só para os demais."
+        )
+        linhas.append("")
+
+    if descartadas:
+        linhas.append(
+            f"> ℹ️ {descartadas} sugestão(ões) da IA foram descartadas pela validação "
+            "(baixa confiança, abaixo de `[revisao] severidade_minima`, duplicada ou fora do diff)."
+        )
+        linhas.append("")
+
+    linhas += _rodape_revisao(analise, ai_agent, tempo_segundos)
+    return "\n".join(linhas)
+
+
+def _rodape_revisao(analise: dict, ai_agent, tempo_segundos: float) -> list[str]:
     fontes = ", ".join(ai_agent.carregar_contexto().get("fontes") or []) or "nenhuma"
-    linhas += [
+    linhas = [
         "",
         f"_Agente: {getattr(ai_agent, 'modelo', 'desconhecido')} · {tempo_segundos}s · Contexto: {fontes}_",
     ]
@@ -747,7 +803,7 @@ def _montar_resumo(validas: list, analise: dict, ai_agent, tempo_segundos: float
             "Pode haver pontos não reportados — aumente `[ia] max_tokens` no `config.ini`."
         )
 
-    return "\n".join(linhas)
+    return linhas
 
 
 # --------------------------------------------------------------------------- #
@@ -793,6 +849,7 @@ def _processar_conflito(pr_id, pr_diff, source_branch, dest_branch, commit_messa
         "aplicados": [],
         "nao_resolvidos": [],
         "ignorados": [],
+        "problemas_encoding": [],
     }
     acionado = False
 
@@ -910,6 +967,18 @@ def _validar_resolucoes(brutas, arquivos_alterados) -> tuple[list, list]:
             })
             continue
 
+        # `�` é o que sobra de um byte que não pôde ser lido na codificação
+        # esperada. Commitar isso gravaria o `�` no lugar do caractere original.
+        if "�" in codigo:
+            log.error("Resolução de '%s' contém caractere ilegível (U+FFFD). Descartada.", caminho)
+            pendentes.append({
+                "arquivo": caminho,
+                "motivo": "a resolução contém `�` (caractere ilegível): o arquivo não está na "
+                          "codificação de `[repositorio] encoding` do `config.ini`, ou o `�` "
+                          "já estava gravado no repositório",
+            })
+            continue
+
         aplicaveis.append({
             "arquivo": caminho,
             "codigo_completo": codigo,
@@ -942,6 +1011,20 @@ def _comentario_conflito(resolucoes, pendentes, resultado_git, analise) -> str:
             ]
             linhas += [f"- `{caminho}`" for caminho in resultado_git["nao_resolvidos"]]
             linhas.append("")
+
+    if resultado_git.get("problemas_encoding"):
+        linhas += [
+            "### Caracteres que a codificação do arquivo não representa",
+            "",
+            "A resolução da IA trazia caracteres que não existem na codificação do arquivo.",
+            "Gravar trocaria cada um por `?` sem ninguém perceber, então o merge foi cancelado:",
+            "",
+        ]
+        linhas += [
+            f"- `{item['arquivo']}` ({item['encoding']}): {', '.join(item['caracteres'])}"
+            for item in resultado_git["problemas_encoding"]
+        ]
+        linhas.append("")
 
     if resultado_git["ignorados"]:
         linhas += [

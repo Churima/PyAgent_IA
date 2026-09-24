@@ -84,6 +84,15 @@ validation → inline PR comments (or `GitWorker` merge).
   socket backlog. Now the worst case is a stale window: the queue fills, console lines are dropped,
   the file log and the service keep going. `[log] console = false` drops the console entirely, for
   running as a service or scheduled task.
+- **`app/core/encoding.py`** — encoding of the client's source files (`[repositorio] encoding`).
+  The AI only handles Unicode; encoding is a transport concern handled at both edges. Bitbucket
+  content is decoded with per-file detection (UTF-8/UTF-16 BOM → that; non-ASCII valid UTF-8 →
+  `utf-8`; anything else, including pure ASCII → the configured encoding), the diff is decoded
+  line by line, and `GitWorker` writes each resolution back in the encoding of the file it replaces.
+  Everything used to be read as UTF-8 with `errors="replace"`: in a windows-1252 `.pas` every `ç`
+  became `�` before reaching the prompt, and the resolved file was written as UTF-8, so every
+  accent of the whole file showed up as `Ã§` in the IDE. Never decode repository content with a
+  hard-coded `utf-8` again.
 - **`app/api/webhook.py`** — `POST /webhook/bitbucket`. Validates the optional `X-PyAgent-Token`
   header, answers `202` immediately and processes in a background thread (`processamento_assincrono`),
   and keeps an in-flight PR set so a Bitbucket retry does not process the same PR twice. It also
@@ -109,8 +118,13 @@ validation → inline PR comments (or `GitWorker` merge).
 - **`app/services/git_worker.py`** — real Git merges in a temp clone. `verificar_conflito()`
   returns `(tem_conflito, arquivos_em_conflito)` — the list matters as much as the flag, because
   only those files need to go to the AI in resolution mode. `resolve_with_merge()` returns a dict
-  (`sucesso`, `motivo`, `aplicados`, `nao_resolvidos`, `ignorados`) and preserves the file's original
-  line endings (CRLF matters in Delphi repos). Git's list of unmerged paths is the **only** write
+  (`sucesso`, `motivo`, `aplicados`, `nao_resolvidos`, `ignorados`, `problemas_encoding`) and
+  preserves the file's original line endings (CRLF matters in Delphi repos) and encoding. Every
+  resolution is encoded **before** any file is written, with no character substitution: one
+  character the file's encoding cannot represent (arrow, `✓`, emoji in windows-1252) aborts the
+  whole merge as `encoding_incompativel`, because a silent `?` would change a Delphi string. Git's
+  path listing runs with `core.quotePath=false`, otherwise an accented filename comes back escaped
+  and fails the authorization check. Git's list of unmerged paths is the **only** write
   authorization, checked both ways: the merge is aborted if the AI missed a conflicted file, and any
   file the AI returns that Git did **not** flag is discarded without being written. That second check
   is what keeps the agent from silently "fixing" a semantic conflict — see below.
@@ -174,7 +188,8 @@ defaults, so an older or sloppier model response does not break the pipeline.
   **destination-file** line number, so an unvalidated number silently misplaces the comment;
 - drop `confianca: baixa` and duplicates, filter by `severidade_minima`, cap at `max_sugestoes`;
 - strip markdown fences of any language before code is committed;
-- reject resolutions that still contain Git conflict markers;
+- reject resolutions that still contain Git conflict markers, or `�` (a byte that could not be
+  decoded — committing it would write `�` over the original character);
 - route blocked extensions (`.dfm`, `.dproj`, ...) and `requer_revisao_humana` to a "needs manual
   merge" list reported in the PR comment.
 
@@ -203,6 +218,13 @@ AI request (`[revisao] revisar_apos_conflito`); being a new request, it also sta
 must send. When `GitWorker` pushed the merge, the diff is **re-fetched and the anchor map rebuilt**
 before that pass — `inline.to` is a destination-file line number, so commenting with the pre-merge
 map would land the suggestions on the wrong lines.
+
+**Review with nothing to report.** When clean-code mode ends with no publishable suggestion,
+`_comentario_sem_sugestoes()` posts a "Sem sugestões de código" comment (`[revisao]
+comentar_sem_sugestoes`), so silence no longer stands for both "all good" and "never reviewed". It
+is **not** posted when every batch failed (`_erro_parse`) — claiming "no suggestions" about code
+the AI never read is worse than silence. Partial batch failures and suggestions dropped by the
+validation layer are called out in the comment.
 
 **Source-branch filter.** `[revisao] branches_origem_ignoradas` lists source branches that are never
 reviewed — a PR from `version` to `master` is a release promotion whose content was already reviewed

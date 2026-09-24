@@ -3,6 +3,13 @@ import subprocess
 import tempfile
 import urllib.parse
 
+from app.core.encoding import (
+    caracteres_nao_representaveis,
+    codificar,
+    decodificar,
+    encoding_configurado,
+    rotulo_encoding,
+)
 from app.core.logger import obter_logger
 
 log = obter_logger(__name__)
@@ -105,7 +112,8 @@ class GitWorker:
     def resolve_with_merge(self, source_branch: str, dest_branch: str, resolucoes: list) -> dict:
         """Aplica as resoluções da IA num merge real e envia de volta ao Bitbucket.
 
-        Devolve {"sucesso", "motivo", "aplicados", "nao_resolvidos"}.
+        Devolve {"sucesso", "motivo", "aplicados", "nao_resolvidos", "ignorados",
+        "problemas_encoding"}.
 
         A lista de arquivos que o Git marcou como não mesclados é a ÚNICA
         autorização de escrita, verificada nos dois sentidos:
@@ -123,6 +131,7 @@ class GitWorker:
             "aplicados": [],
             "nao_resolvidos": [],
             "ignorados": [],
+            "problemas_encoding": [],
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -181,18 +190,48 @@ class GitWorker:
 
                 log.info("Conflito confirmado. Aplicando %d resolução(ões) da IA...", len(aplicaveis))
 
+                # Codifica tudo ANTES de gravar qualquer arquivo. Um caractere que a
+                # codificação do arquivo não representa derruba o merge inteiro, e
+                # descobrir isso no terceiro arquivo deixaria dois já gravados.
+                gravacoes = []
                 for res in aplicaveis:
                     caminho_relativo = res["arquivo"].replace("\\", "/")
                     caminho_absoluto = os.path.join(tmpdir, *caminho_relativo.split("/"))
-                    os.makedirs(os.path.dirname(caminho_absoluto), exist_ok=True)
+                    conteudo, encoding = _conteudo_para_gravar(caminho_absoluto, res["codigo_completo"])
+                    try:
+                        gravacoes.append((caminho_relativo, caminho_absoluto,
+                                          codificar(conteudo, encoding), encoding))
+                    except UnicodeEncodeError:
+                        resultado["problemas_encoding"].append({
+                            "arquivo": caminho_relativo,
+                            "encoding": rotulo_encoding(encoding),
+                            "caracteres": caracteres_nao_representaveis(conteudo, encoding),
+                        })
 
-                    conteudo = _preservar_quebras(caminho_absoluto, res["codigo_completo"])
-                    with open(caminho_absoluto, "w", encoding="utf-8", newline="") as arquivo:
-                        arquivo.write(conteudo)
+                if resultado["problemas_encoding"]:
+                    log.error(
+                        "A IA devolveu caractere que a codificação do arquivo não representa: %s. "
+                        "Merge abortado.",
+                        "; ".join(
+                            f"{item['arquivo']} ({item['encoding']}): {', '.join(item['caracteres'])}"
+                            for item in resultado["problemas_encoding"]
+                        ),
+                    )
+                    self._executar(["merge", "--abort"], cwd=tmpdir)
+                    resultado["motivo"] = "encoding_incompativel"
+                    resultado["nao_resolvidos"] = [
+                        item["arquivo"] for item in resultado["problemas_encoding"]
+                    ]
+                    return resultado
+
+                for caminho_relativo, caminho_absoluto, bruto, encoding in gravacoes:
+                    os.makedirs(os.path.dirname(caminho_absoluto), exist_ok=True)
+                    with open(caminho_absoluto, "wb") as arquivo:
+                        arquivo.write(bruto)
 
                     self._executar(["add", "--", caminho_relativo], cwd=tmpdir, check=True)
                     resultado["aplicados"].append(caminho_relativo)
-                    log.info("Resolução aplicada: %s", caminho_relativo)
+                    log.info("Resolução aplicada: %s (%s)", caminho_relativo, rotulo_encoding(encoding))
 
                 restantes = self._arquivos_em_conflito(tmpdir)
                 if restantes:
@@ -232,7 +271,12 @@ class GitWorker:
 
     def _arquivos_em_conflito(self, cwd: str) -> list[str]:
         """Caminhos que o Git marcou como não mesclados (diff-filter=U)."""
-        resultado = self._executar(["diff", "--name-only", "--diff-filter=U"], cwd=cwd)
+        # Sem `core.quotePath=false` o Git devolve `"Cadastro\303\247.pas"` para
+        # um nome com acento, que não casa com o caminho da resolução e aborta o
+        # merge como se a IA tivesse esquecido o arquivo.
+        resultado = self._executar(
+            ["-c", "core.quotePath=false", "diff", "--name-only", "--diff-filter=U"], cwd=cwd
+        )
         if resultado.returncode != 0:
             return []
         saida = resultado.stdout.decode("utf-8", errors="replace")
@@ -243,22 +287,34 @@ def _normalizar(caminho: str) -> str:
     return caminho.replace("\\", "/").strip().lstrip("./").lower()
 
 
-def _preservar_quebras(caminho_absoluto: str, conteudo: str) -> str:
+def _conteudo_para_gravar(caminho_absoluto: str, conteudo: str) -> tuple[str, str]:
+    """Ajusta a resolução ao arquivo que ela substitui: (texto, codificação).
+
+    A codificação e o estilo de quebra de linha saem do arquivo que está no
+    clone — a versão com os marcadores de conflito, que tem os bytes das duas
+    branches. Arquivo novo (não existe no clone) usa `[repositorio] encoding`.
+    """
+    try:
+        with open(caminho_absoluto, "rb") as arquivo:
+            original, encoding = decodificar(arquivo.read(), origem=caminho_absoluto)
+    except OSError:
+        original, encoding = "", encoding_configurado()
+
+    return _preservar_quebras(original, conteudo), encoding
+
+
+def _preservar_quebras(original: str, conteudo: str) -> str:
     """Mantém o estilo de quebra de linha original do arquivo.
 
     Repositórios Delphi costumam estar em CRLF. Gravar o arquivo resolvido em LF
     faria o diff do commit mostrar o arquivo inteiro como alterado, escondendo o
-    que realmente mudou no merge.
+    que realmente mudou no merge. A contagem é feita sobre o texto já
+    decodificado: em UTF-16 o `\r\n` não aparece como bytes seguidos.
     """
     conteudo = conteudo.replace("\r\n", "\n").replace("\r", "\n")
 
-    usa_crlf = False
-    try:
-        with open(caminho_absoluto, "rb") as arquivo:
-            bruto = arquivo.read()
-        usa_crlf = bruto.count(b"\r\n") > 0 and bruto.count(b"\r\n") >= bruto.count(b"\n") / 2
-    except OSError:
-        pass
+    crlf = original.count("\r\n")
+    usa_crlf = crlf > 0 and crlf >= original.count("\n") / 2
 
     if not conteudo.endswith("\n"):
         conteudo += "\n"

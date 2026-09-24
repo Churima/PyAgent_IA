@@ -144,6 +144,27 @@ branches_origem_ignoradas = version, version_candidate
 ; completos que o modo de conflito precisa enviar.
 revisar_apos_conflito = true
 
+; Quando a revisão termina sem nenhum ponto a comentar, publica um comentário
+; "Sem sugestões de código" no PR. Sem ele, o silêncio do agente não distingue
+; "revisei e está tudo certo" de "nem cheguei a revisar".
+comentar_sem_sugestoes = true
+
+
+[repositorio]
+; Codificação dos arquivos-fonte do repositório: utf-8 | windows-1252 | latin-1 ...
+; Repositório Delphi antigo quase sempre é windows-1252 (o "ANSI" da IDE).
+;
+; A detecção é feita arquivo por arquivo: BOM e UTF-8 válido são reconhecidos
+; sozinhos, então um repositório misto funciona. Este valor vale para o resto —
+; arquivos com acento que não são UTF-8 e arquivos só com ASCII (se a IA
+; acrescentar um acento, ele sai nesta codificação).
+;
+; Errar aqui aparece como `Ã§` no lugar de `ç` na IDE depois de um merge
+; automático. Se a IA devolver um caractere que esta codificação não
+; representa (seta, emoji...), o arquivo vai para merge manual em vez de ser
+; gravado com `?`.
+encoding = utf-8
+
 
 [git]
 ; Deixe vazio para usar o git do PATH.

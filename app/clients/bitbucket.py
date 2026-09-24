@@ -3,6 +3,7 @@ import urllib.parse
 
 import requests
 
+from app.core.encoding import decodificar, decodificar_diff, encoding_configurado
 from app.core.logger import obter_logger
 
 log = obter_logger(__name__)
@@ -60,7 +61,8 @@ class BitbucketClient:
             return ""
 
         if resposta.status_code == 200:
-            return resposta.content.decode("utf-8", errors="replace")
+            # Linha a linha: o diff mistura arquivos de codificações diferentes.
+            return decodificar_diff(resposta.content)
 
         log.error("Falha ao buscar diff: %s - %s", resposta.status_code, resposta.text[:300])
         return ""
@@ -112,6 +114,15 @@ class BitbucketClient:
 
     def get_file_raw(self, branch_name: str, filepath: str) -> str:
         """Baixa o conteúdo completo de um arquivo em uma branch específica."""
+        return self.get_file(branch_name, filepath)[0]
+
+    def get_file(self, branch_name: str, filepath: str) -> tuple[str, str]:
+        """Conteúdo do arquivo e a codificação em que ele está no repositório.
+
+        O Bitbucket devolve os bytes crus. Ler tudo como UTF-8 transformava cada
+        acento de um `.pas` windows-1252 em `�` antes de o texto chegar à
+        IA — ver `app/core/encoding.py`.
+        """
         log.info("Baixando '%s' da branch '%s'", filepath, branch_name)
         encoded_branch = urllib.parse.quote(branch_name, safe="")
         url = f"{self.base_url}/src/{encoded_branch}/{filepath}"
@@ -120,14 +131,14 @@ class BitbucketClient:
             resposta = requests.get(url, auth=self.auth, timeout=self.timeout)
         except requests.RequestException as erro:
             log.warning("Falha de rede ao baixar '%s': %s", filepath, erro)
-            return ""
+            return "", encoding_configurado()
 
         if resposta.status_code == 200:
-            return resposta.content.decode("utf-8", errors="replace")
+            return decodificar(resposta.content, origem=filepath)
 
         log.warning("Arquivo '%s' indisponível na branch '%s': HTTP %s",
                     filepath, branch_name, resposta.status_code)
-        return ""
+        return "", encoding_configurado()
 
     def get_recent_commit_messages(self, branch_name: str, limit: int = 5) -> list:
         """Mensagens dos commits mais recentes da branch."""

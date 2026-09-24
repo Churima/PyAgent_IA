@@ -18,6 +18,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from app.core.encoding import normalizar_encoding
 from app.core.paths import caminho_dados, caminho_recurso, diretorio_base
 
 NOME_ARQUIVO_INI = "config.ini"
@@ -68,6 +69,9 @@ MAPA_CONFIG: dict[tuple[str, str], tuple[str, str]] = {
     ("revisao", "max_caracteres_arquivo"): ("REVISAO_MAX_CARACTERES_ARQUIVO", "80000"),
     ("revisao", "branches_origem_ignoradas"): ("REVISAO_BRANCHES_IGNORADAS", ""),
     ("revisao", "revisar_apos_conflito"): ("REVISAO_APOS_CONFLITO", "true"),
+    ("revisao", "comentar_sem_sugestoes"): ("REVISAO_COMENTAR_SEM_SUGESTOES", "true"),
+
+    ("repositorio", "encoding"): ("REPOSITORIO_ENCODING", "utf-8"),
 
     ("git", "executavel"): ("GIT_EXECUTAVEL", ""),
 
@@ -261,6 +265,13 @@ def validar_configuracao() -> tuple[list[str], list[str]]:
     elif not os.path.isfile(git):
         erros.append(f"config.ini: [git] executavel aponta para um arquivo inexistente: {git}")
 
+    encoding = obter("REPOSITORIO_ENCODING", "utf-8")
+    if not normalizar_encoding(encoding):
+        erros.append(
+            f"config.ini: [repositorio] encoding = '{encoding}' não é uma codificação conhecida "
+            "(exemplos: utf-8, windows-1252, latin-1)"
+        )
+
     porta = obter_int("FLASK_RUN_PORT", 5000)
     if not 1 <= porta <= 65535:
         erros.append(f"config.ini: [servidor] porta = {porta} está fora da faixa 1-65535")
@@ -369,6 +380,9 @@ max_caracteres = 60000
 max_sugestoes        = 15
 idioma_comentarios   = pt-BR
 extensoes_bloqueadas = .dfm,.dproj,.res,.dpr,.groupproj,.bpl,.dcu
+
+[repositorio]
+encoding = utf-8
 
 [git]
 executavel =
