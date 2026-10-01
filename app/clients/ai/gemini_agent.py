@@ -7,11 +7,18 @@ de parse que existia antes.
 
 A chamada degrada em etapas: se o modelo configurado não aceitar `responseSchema`
 ou `systemInstruction`, a requisição é refeita sem esses campos em vez de falhar.
+
+O HTTP 429 de cota por minuto é tratado à parte do erro temporário comum: a API
+diz quanto falta para a janela reabrir ("Please retry in 34.8s") e o agente
+espera exatamente isso, em vez de reenviar em 2s e 4s e queimar as tentativas
+dentro da mesma janela fechada.
 """
 
 import json
 import os
 import random
+import re
+import threading
 import time
 
 import requests
@@ -24,11 +31,24 @@ from app.clients.ai.prompt_builder import (
     schema_para,
 )
 from app.core.logger import obter_logger
+from app.services.diff_utils import estimar_tokens
 
 log = obter_logger(__name__)
 
 URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 STATUS_TEMPORARIOS = {429, 500, 502, 503, 504}
+
+# Somada ao "retry in Xs" da API: o relógio de lá e o daqui não batem no
+# milissegundo, e reenviar um instante antes da janela abrir custa outro 429.
+_FOLGA_COTA = 2.0
+
+_RE_RETRY_IN = re.compile(r"retry in\s+([\d.]+)\s*(ms|s)\b", re.IGNORECASE)
+
+# A cota por minuto é da chave, não da thread. Quando uma requisição leva 429,
+# o próximo lote — e o PR que ocupa a outra vaga de revisão — iam bater na
+# mesma janela fechada e falhar também. Todo envio espera até este instante.
+_cota_liberada_em = 0.0
+_trava_cota = threading.Lock()
 
 
 class GeminiAgent(BaseAIAgent):
@@ -40,6 +60,7 @@ class GeminiAgent(BaseAIAgent):
         self.temperatura = _decimal("AI_TEMPERATURA", 0.0)
         self.tentativas = max(1, _inteiro("AI_TENTATIVAS", 3))
         self.usar_schema = _booleano("AI_SCHEMA_ESTRITO", True)
+        self.espera_maxima_cota = max(0, _inteiro("AI_ESPERA_MAXIMA_COTA", 180))
 
     @property
     def url(self) -> str:
@@ -171,14 +192,25 @@ class GeminiAgent(BaseAIAgent):
 
         Devolve (texto, metadados) ou None. Em caso de None,
         `_ultima_falha_recuperavel` indica se vale tentar outro perfil de corpo.
+
+        O 429 de cota por minuto não gasta tentativa: a espera que a API pediu é
+        cumprida e a requisição volta a ser enviada, até somar
+        `[ia] espera_maxima_cota` segundos de espera nesta requisição. Antes,
+        as três tentativas saíam em 2s e 4s, todas dentro da mesma janela
+        esgotada, e o lote era dado como perdido com a cota prestes a voltar.
         """
         cabecalhos = {
             "Content-Type": "application/json",
             "x-goog-api-key": self.api_key,
         }
         self._ultima_falha_recuperavel = False
+        tentativa = 0
+        esperas_cota = 0
+        primeiro_429 = None
 
-        for tentativa in range(1, self.tentativas + 1):
+        while tentativa < self.tentativas:
+            tentativa += 1
+            _aguardar_janela_de_cota()
             try:
                 resposta = requests.post(
                     self.url, json=corpo, headers=cabecalhos, timeout=self.timeout
@@ -209,6 +241,61 @@ class GeminiAgent(BaseAIAgent):
                     return None
 
             detalhe = _detalhe_erro(resposta)
+
+            if resposta.status_code == 429:
+                espera, diaria, limite = _info_cota(resposta)
+
+                if diaria:
+                    self._ultimo_motivo = f"HTTP 429: cota diária esgotada — {detalhe}"
+                    log.error("Gemini: cota DIÁRIA da chave esgotada. Esperar segundos não "
+                              "resolve; as revisões voltam quando a cota renovar.")
+                    return None
+
+                if espera is not None:
+                    _fechar_janela_de_cota(espera + _FOLGA_COTA)
+                    if primeiro_429 is None:
+                        primeiro_429 = time.monotonic()
+                    # Relógio de parede, não soma dos "retry in": conta também
+                    # o envio de cada tentativa, que num lote grande leva ~15s.
+                    decorrido = time.monotonic() - primeiro_429
+
+                    # Requisição maior que a cota inteira nunca cabe numa janela,
+                    # por mais que se espere. Uma janela limpa ainda é tentada
+                    # (a contagem de lá não bate exatamente com a estimativa
+                    # daqui); depois disso, esperar é só segurar a vaga de revisão.
+                    estimativa = _tokens_estimados(corpo)
+                    grande_demais = bool(limite) and estimativa > limite
+                    if grande_demais and esperas_cota == 0:
+                        log.warning(
+                            "Esta requisição tem ~%d tokens estimados, acima da cota de %d por "
+                            "minuto: dificilmente cabe numa janela. Reduza [ia] "
+                            "max_tokens_entrada no config.ini.", estimativa, limite,
+                        )
+
+                    if grande_demais:
+                        pode_esperar = esperas_cota == 0
+                    else:
+                        pode_esperar = decorrido + espera <= self.espera_maxima_cota
+
+                    if pode_esperar:
+                        esperas_cota += 1
+                        tentativa -= 1
+                        log.warning(
+                            "Gemini devolveu HTTP 429: cota por minuto esgotada%s. A API pediu "
+                            "%.1fs; o envio fica suspenso até lá (%.0fs de %ds já esperando a "
+                            "cota nesta requisição).",
+                            f" (limite {limite})" if limite else "", espera,
+                            decorrido, self.espera_maxima_cota,
+                        )
+                        continue
+
+                    self._ultimo_motivo = f"HTTP 429: {detalhe}"
+                    log.error(
+                        "Gemini: cota por minuto ainda esgotada depois de %.0fs esperando nesta "
+                        "requisição. Lote dado como perdido; aumente [ia] espera_maxima_cota "
+                        "ou reduza [ia] max_tokens_entrada.", decorrido,
+                    )
+                    return None
 
             if resposta.status_code in STATUS_TEMPORARIOS and tentativa < self.tentativas:
                 log.warning(
@@ -316,13 +403,115 @@ def _detalhe_erro(resposta) -> str:
         return (resposta.text or "")[:300]
 
 
+def _info_cota(resposta) -> tuple[float | None, bool, int | None]:
+    """Do 429: (segundos que a API mandou esperar, cota é diária, limite da cota).
+
+    A espera vem de três jeitos, e serve o primeiro que aparecer: `RetryInfo`
+    nos `details` ("34.842950224s"), o "Please retry in 34.84s." no fim da
+    mensagem e o cabeçalho `Retry-After`. A `QuotaFailure` diz qual cota
+    estourou — `...PerDay...` só volta no dia seguinte, então nem adianta esperar.
+    """
+    try:
+        dados = resposta.json()
+    except ValueError:
+        dados = {}
+    if isinstance(dados, list):
+        dados = dados[0] if dados else {}
+    erro = (dados.get("error") if isinstance(dados, dict) else None) or {}
+
+    espera = None
+    diaria = False
+    limite = None
+
+    for item in erro.get("details") or []:
+        if not isinstance(item, dict):
+            continue
+        tipo = str(item.get("@type", ""))
+        if tipo.endswith("RetryInfo"):
+            espera = _duracao(item.get("retryDelay"))
+        elif tipo.endswith("QuotaFailure"):
+            for violacao in item.get("violations") or []:
+                cota = f"{violacao.get('quotaId', '')} {violacao.get('quotaMetric', '')}".lower()
+                if "perday" in cota:
+                    diaria = True
+                # Só a cota de tokens serve de régua para o tamanho da
+                # requisição; a de requisições por minuto tem valor tipo 15.
+                if "token" not in cota:
+                    continue
+                try:
+                    limite = int(violacao.get("quotaValue"))
+                except (TypeError, ValueError):
+                    pass
+
+    if espera is None:
+        achado = _RE_RETRY_IN.search(str(erro.get("message") or ""))
+        if achado:
+            espera = _duracao(achado.group(1) + achado.group(2))
+
+    if espera is None:
+        espera = _duracao((resposta.headers or {}).get("Retry-After"))
+
+    return espera, diaria, limite
+
+
+def _duracao(texto) -> float | None:
+    """'34.84s', '332.4ms' ou '30' (Retry-After) em segundos."""
+    valor = str(texto or "").strip().lower()
+    divisor = 1.0
+    if valor.endswith("ms"):
+        valor, divisor = valor[:-2], 1000.0
+    elif valor.endswith("s"):
+        valor = valor[:-1]
+    try:
+        segundos = float(valor) / divisor
+    except ValueError:
+        return None
+    return segundos if segundos >= 0 else None
+
+
+def _tokens_estimados(corpo: dict) -> int:
+    """Tamanho da requisição pela mesma régua que divide o PR em lotes."""
+    textos = [
+        parte.get("text", "")
+        for bloco in [*(corpo.get("contents") or []), corpo.get("systemInstruction") or {}]
+        for parte in (bloco.get("parts") or [])
+    ]
+    return estimar_tokens("".join(textos))
+
+
+def _fechar_janela_de_cota(segundos: float) -> None:
+    """Marca a cota como esgotada pelos próximos `segundos`, para todas as threads."""
+    global _cota_liberada_em
+    with _trava_cota:
+        _cota_liberada_em = max(_cota_liberada_em, time.monotonic() + segundos)
+
+
+def _aguardar_janela_de_cota() -> None:
+    """Segura o envio enquanto a cota por minuto estiver marcada como esgotada.
+
+    É o que faz o próximo lote esperar a janela reabrir em vez de ser enviado
+    logo atrás do que levou 429 — e falhar do mesmo jeito.
+    """
+    with _trava_cota:
+        restante = _cota_liberada_em - time.monotonic()
+    if restante > 0:
+        log.info("Aguardando %.0fs a cota por minuto do Gemini reabrir antes de enviar.", restante)
+        # O jitter evita que as duas vagas de revisão reenviem no mesmo instante.
+        time.sleep(restante + random.uniform(0, 1))
+
+
 def _resumo(dados: dict) -> str:
     return json.dumps(dados, ensure_ascii=False)[:500]
 
 
 def _esperar(tentativa: int) -> None:
-    """Backoff exponencial com jitter, para não sincronizar retentativas."""
-    espera = min(2 ** tentativa, 20) + random.uniform(0, 1)
+    """Backoff exponencial com jitter, para não sincronizar retentativas.
+
+    Começa em 5s (5, 10, 20, 40, até 60): o 503 "model is currently experiencing
+    high demand" é pico de carga do lado do Google, e com 2s e 4s as tentativas
+    se esgotavam em menos de dez segundos, ainda dentro do mesmo pico.
+    """
+    espera = min(5 * 2 ** (tentativa - 1), 60) + random.uniform(0, 1)
     time.sleep(espera)
 
 

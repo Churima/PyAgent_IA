@@ -34,6 +34,7 @@ MAPA_CONFIG: dict[tuple[str, str], tuple[str, str]] = {
     ("ia", "temperatura"): ("AI_TEMPERATURA", "0.0"),
     ("ia", "timeout_segundos"): ("AI_TIMEOUT", "180"),
     ("ia", "tentativas"): ("AI_TENTATIVAS", "3"),
+    ("ia", "espera_maxima_cota"): ("AI_ESPERA_MAXIMA_COTA", "180"),
     ("ia", "usar_schema_estrito"): ("AI_SCHEMA_ESTRITO", "true"),
     ("ia", "max_tokens_entrada"): ("AI_MAX_TOKENS_ENTRADA", "60000"),
     ("ia", "pausa_entre_lotes"): ("AI_PAUSA_ENTRE_LOTES", "2"),

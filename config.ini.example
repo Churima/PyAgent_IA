@@ -27,8 +27,18 @@ temperatura      = 0.0
 ; Tempo máximo de espera por resposta da IA, em segundos
 timeout_segundos = 180
 
-; Tentativas em caso de erro temporário (429/503) — com espera progressiva
+; Tentativas em caso de erro temporário (503, 500, timeout) — com espera
+; progressiva de 5s, 10s, 20s, 40s. O 503 "high demand" do Gemini é pico de
+; carga do lado do Google: se ele aparece muito no log, suba para 5.
 tentativas       = 3
+
+; Quando o Gemini responde 429 "Please retry in Xs" (cota de tokens ou de
+; requisições por minuto esgotada), o agente espera esses X segundos e reenvia
+; — sem gastar tentativa — e os próximos lotes e PRs também esperam a janela
+; reabrir em vez de bater nela. Este é o teto, em segundos, que uma requisição
+; fica esperando a cota; passou disso, o lote é dado como perdido.
+; 0 = não espera: o lote falha no primeiro 429.
+espera_maxima_cota = 180
 
 ; Saída estruturada com schema. Se o modelo escolhido não suportar, o agente
 ; refaz a chamada sem o schema automaticamente.

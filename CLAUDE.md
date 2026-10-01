@@ -146,9 +146,16 @@ validation → inline PR comments (or `GitWorker` merge).
   generic), the severity scale, the mandatory comment format, and the `responseSchema` definitions.
 - `gemini_agent.py` — `GeminiAgent`, the primary backend. Structured output
   (`responseMimeType: application/json` + `responseSchema`), API key in the `x-goog-api-key` header
-  (never in the URL), retry with exponential backoff on 429/5xx, and **progressive degradation**: an
-  HTTP 400 causes the request to be retried without `responseSchema`, then without
-  `systemInstruction`, instead of failing.
+  (never in the URL), retry with exponential backoff on 5xx (5s, 10s, 20s...), and **progressive
+  degradation**: an HTTP 400 causes the request to be retried without `responseSchema`, then
+  without `systemInstruction`, instead of failing. **A 429 per-minute quota is not a normal retry**:
+  the delay the API asks for (`RetryInfo.retryDelay`, the "Please retry in Xs" text, or
+  `Retry-After`) is honored without spending an attempt, up to `[ia] espera_maxima_cota` seconds
+  of wall clock per request, and it closes a module-level window (`_cota_liberada_em`) that every
+  later send waits on — the next batch and the PR in the other review slot included. Before this,
+  the three attempts went out 2s and 4s apart inside the same exhausted window, and a 15-batch PR
+  lost 14 batches in a row. A `PerDay` quota fails at once (waiting cannot help), and a request
+  whose estimate exceeds the quota's own limit gets one fresh window, not the whole budget.
 - `claude_agent.py` — `ClaudeAgent`. Same contract; assistant prefill with `{` to force JSON. The
   system prompt goes as a `cache_control: ephemeral` block (`[ia] usar_cache_prompt`), which pays
   off because batching means several calls share the same system prompt. Still pending here: tool
@@ -223,8 +230,12 @@ map would land the suggestions on the wrong lines.
 `_comentario_sem_sugestoes()` posts a "Sem sugestões de código" comment (`[revisao]
 comentar_sem_sugestoes`), so silence no longer stands for both "all good" and "never reviewed". It
 is **not** posted when every batch failed (`_erro_parse`) — claiming "no suggestions" about code
-the AI never read is worse than silence. Partial batch failures and suggestions dropped by the
-validation layer are called out in the comment.
+the AI never read is worse than silence. Suggestions dropped by the validation layer are called out
+in the comment. A **partial** batch failure changes the headline from ✅ to "⚠️ Revisão incompleta"
+and lists the files of the failed batches (each batch's analysis carries `_arquivos_lote`; the merge
+exposes `_arquivos_sem_revisao`) — the old ✅ headline with a footnote was read as "code approved"
+on a PR where 14 of 15 batches never reached the AI. The same file list is appended to the summary
+comment when there *are* suggestions.
 
 **Source-branch filter.** `[revisao] branches_origem_ignoradas` lists source branches that are never
 reviewed — a PR from `version` to `master` is a release promotion whose content was already reviewed

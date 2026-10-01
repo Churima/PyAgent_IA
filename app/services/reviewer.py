@@ -318,6 +318,7 @@ def _mesclar_dados_log(conflito: dict, clean: dict | None) -> dict:
         ),
         "lotes": clean.get("lotes", 0),
         "lotes_com_falha": clean.get("lotes_com_falha", 0),
+        "arquivos_sem_revisao": clean.get("arquivos_sem_revisao") or [],
         "num_sugestoes_clean_code": clean.get("num_sugestoes_clean_code", 0),
         "num_descartadas": (conflito.get("num_descartadas") or 0)
         + (clean.get("num_descartadas") or 0),
@@ -445,7 +446,7 @@ def _processar_clean_code(pr_id, pr_diff, source_branch, dest_branch, commit_mes
         else:
             log.info("Enviando para a IA (modo: clean_code)...")
 
-        analises.append(ai_agent.analyze_pr(
+        analise_lote = ai_agent.analyze_pr(
             pr_diff=diff_lote,
             commit_messages=commit_messages,
             contexto_arquivos=lote,
@@ -458,7 +459,10 @@ def _processar_clean_code(pr_id, pr_diff, source_branch, dest_branch, commit_mes
             # quando o lote traz só parte dos arquivos: é isso que preserva a
             # detecção de chamador desatualizado através da fronteira do lote.
             contexto_global=contexto_arquivos,
-        ))
+        )
+        # Para o comentário dizer quais arquivos ficaram sem revisão quando o lote falha.
+        analise_lote["_arquivos_lote"] = caminhos
+        analises.append(analise_lote)
 
     analise = _mesclar_analises(analises)
     tempo_segundos = round(time.time() - inicio, 2)
@@ -494,6 +498,7 @@ def _processar_clean_code(pr_id, pr_diff, source_branch, dest_branch, commit_mes
         "tempo_segundos": tempo_segundos,
         "lotes": len(lotes),
         "lotes_com_falha": analise.get("_lotes_com_falha", 0),
+        "arquivos_sem_revisao": analise.get("_arquivos_sem_revisao") or [],
         "num_resolucoes": 0,
         "num_sugestoes_clean_code": postadas,
         "num_descartadas": descartadas,
@@ -621,6 +626,9 @@ def _mesclar_analises(analises: list) -> dict:
         "_tokens": tokens or None,
         "_lotes": len(analises),
         "_lotes_com_falha": len(falhas),
+        "_arquivos_sem_revisao": [
+            caminho for analise in falhas for caminho in (analise.get("_arquivos_lote") or [])
+        ],
     }
 
 
@@ -741,8 +749,56 @@ def _montar_resumo(validas: list, analise: dict, ai_agent, tempo_segundos: float
             f"{EMOJI_SEVERIDADE[item['severidade']]} {item['severidade']} | {titulo} |"
         )
 
+    # Sem isto, um PR com metade dos lotes perdidos parecia revisado por inteiro.
+    if analise.get("_lotes_com_falha"):
+        linhas += [""] + _aviso_arquivos_sem_revisao(analise)
+
     linhas += _rodape_revisao(analise, ai_agent, tempo_segundos)
     return "\n".join(linhas)
+
+
+# Acima disso a lista vira parede de texto no PR; o restante vai como contagem.
+_MAX_ARQUIVOS_LISTADOS = 30
+
+_MOTIVO_POR_STATUS = {
+    "HTTP 429": "cota da API da IA esgotada",
+    "HTTP 500": "erro no servidor da IA",
+    "HTTP 502": "erro no servidor da IA",
+    "HTTP 503": "modelo da IA sobrecarregado",
+    "HTTP 504": "a IA não respondeu a tempo",
+}
+
+
+def _aviso_arquivos_sem_revisao(analise: dict) -> list[str]:
+    """Bloco com os arquivos dos lotes que a IA não chegou a analisar."""
+    falhas = analise.get("_lotes_com_falha") or 0
+    arquivos = analise.get("_arquivos_sem_revisao") or []
+
+    linhas = [
+        f"> ⚠️ **{falhas} de {analise.get('_lotes', falhas)} lote(s) não foram analisados pela IA** "
+        f"({_motivo_curto(analise.get('_motivo_erro'))}). "
+        "Estes arquivos ficaram **sem revisão**:",
+        ">",
+    ]
+    linhas += [f"> - `{caminho}`" for caminho in arquivos[:_MAX_ARQUIVOS_LISTADOS]]
+    if len(arquivos) > _MAX_ARQUIVOS_LISTADOS:
+        linhas.append(f"> - … e mais {len(arquivos) - _MAX_ARQUIVOS_LISTADOS} arquivo(s)")
+    linhas.append("")
+    return linhas
+
+
+def _motivo_curto(motivo) -> str:
+    """'HTTP 429: You exceeded your current quota… (3 linhas)' -> 'HTTP 429 — cota …'."""
+    texto = str(motivo or "").strip()
+    if not texto:
+        return "falha na comunicação com a IA"
+
+    codigo = texto.split(":", 1)[0].strip()
+    if codigo in _MOTIVO_POR_STATUS:
+        return f"`{codigo}` — {_MOTIVO_POR_STATUS[codigo]}"
+
+    primeira = texto.splitlines()[0]
+    return primeira if len(primeira) <= 100 else primeira[:97] + "..."
 
 
 def _comentario_sem_sugestoes(analise: dict, ai_agent, tempo_segundos: float,
@@ -759,25 +815,30 @@ def _comentario_sem_sugestoes(analise: dict, ai_agent, tempo_segundos: float,
                     "não publicado.", analise.get("_motivo_erro") or "motivo desconhecido")
         return None
 
-    linhas = [
-        "## 🤖 Revisão automática — PyAgent IA",
-        "",
-        "✅ **Sem sugestões de código.** A revisão não encontrou pontos de clean code "
-        "para comentar nas alterações deste PR.",
-        "",
-    ]
+    falhas = analise.get("_lotes_com_falha") or 0
+
+    # Com lote perdido, o título não pode ser o ✅: num PR de 15 lotes com 14
+    # falhas, "Sem sugestões" no topo foi lido como "código aprovado", e o
+    # aviso em letra miúda embaixo passava despercebido.
+    if falhas:
+        cabecalho = (
+            "⚠️ **Revisão incompleta.** A IA não encontrou pontos de clean code nos "
+            "arquivos que conseguiu analisar, mas parte do PR ficou de fora — veja abaixo."
+        )
+    else:
+        cabecalho = (
+            "✅ **Sem sugestões de código.** A revisão não encontrou pontos de clean code "
+            "para comentar nas alterações deste PR."
+        )
+
+    linhas = ["## 🤖 Revisão automática — PyAgent IA", "", cabecalho, ""]
+
+    if falhas:
+        linhas += _aviso_arquivos_sem_revisao(analise)
 
     resumo_geral = str(analise.get("resumo_geral") or "").strip()
     if resumo_geral:
         linhas += [resumo_geral, ""]
-
-    falhas = analise.get("_lotes_com_falha") or 0
-    if falhas:
-        linhas.append(
-            f"> ⚠️ {falhas} de {analise.get('_lotes', falhas)} lote(s) de arquivos falharam na IA "
-            "e não foram revisados — a ausência de sugestões vale só para os demais."
-        )
-        linhas.append("")
 
     if descartadas:
         linhas.append(
