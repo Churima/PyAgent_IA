@@ -1,8 +1,9 @@
 """Resolução de caminhos que funciona tanto rodando pelo Python quanto pelo .exe.
 
-Sob o PyInstaller, `__file__` aponta para uma pasta temporária que é apagada ao
-final da execução. Tudo que o usuário precisa editar (config.ini, ai_context/,
-logs/) tem que ser resolvido a partir da pasta do executável, e não do bundle.
+Sob o PyInstaller, `__file__` aponta para dentro do bundle (`_internal\`), que é
+substituído a cada atualização. Tudo que o usuário precisa editar (config.ini,
+ai_context/, logs/) tem que ser resolvido a partir da pasta do executável, e não
+do bundle.
 """
 
 import os

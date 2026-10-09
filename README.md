@@ -60,8 +60,16 @@ The prototype was validated against **20 complex experimental scenarios** spanni
 
 ## 📦 Distribution: Building the Executable
 
-The agent ships as a **single self-contained `.exe`** that runs from a folder holding its own
-configuration and AI context files. No Python installation is required on the target machine.
+The agent ships as a **self-contained folder**: `PyAgentIA.exe` plus its `_internal\` runtime, next
+to its own configuration and AI context files. No Python installation is required on the target
+machine.
+
+> **Why not a single `.exe`?** It used to be one (PyInstaller onefile). A onefile executable unpacks
+> itself into `%TEMP%\_MEIxxxxx` and runs from there for as long as it is up, and Windows' temp
+> cleanup deletes files there that have gone 7 days without access. After a week of uptime the
+> agent lost `certifi\cacert.pem`, and every Bitbucket and AI call failed with
+> `Could not find a suitable TLS CA certificate bundle` while the webhook kept accepting events.
+> The onedir build never touches `%TEMP%`.
 
 ### Build
 
@@ -83,7 +91,7 @@ Add `-Limpar` to rebuild the build environment from scratch: `build.bat -Limpar`
 The script creates an isolated build virtualenv (`.venv-build`), installs `requirements-build.txt`,
 runs PyInstaller against `pyagent.spec`, and assembles `dist\PyAgentIA\` ready to copy to the server.
 
-Building inside an isolated virtualenv is what keeps the binary around 12 MB — building from a
+Building inside an isolated virtualenv is what keeps the package around 22 MB — building from a
 global interpreter drags every installed package into the bundle.
 
 Expected output on success:
@@ -96,7 +104,7 @@ Expected output on success:
 [5/5] Montando a pasta de distribuicao...
 
 Build concluido.
-  Executavel: ...\dist\PyAgentIA\PyAgentIA.exe (11,6 MB)
+  Pacote: ...\dist\PyAgentIA (22 MB, PyAgentIA.exe + _internal)
 ```
 
 ### Deployment folder layout
@@ -104,6 +112,7 @@ Build concluido.
 ```
 PyAgentIA\
 ├── PyAgentIA.exe                  # the agent
+├── _internal\                     # Python runtime and libraries; the .exe does not run without it
 ├── config.ini                     # all configuration (replaces .env)
 ├── ai_context\                    # user-editable AI context
 │   ├── exemplos_treinamento.md    # generic calibration examples

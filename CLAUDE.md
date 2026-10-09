@@ -10,8 +10,14 @@ to an AI agent (Google Gemini or Anthropic Claude), and posts clean code suggest
 comments. When Git reports a real merge conflict, it delegates resolution to `GitWorker`, which
 performs an actual merge commit and pushes it back.
 
-It is distributed as a **single PyInstaller executable** that runs from a folder containing its own
-`config.ini` and an editable `ai_context/` directory. The production target is a client codebase
+It is distributed as a PyInstaller **onedir** build (`PyAgentIA.exe` plus its `_internal\` folder)
+that runs from a folder containing its own `config.ini` and an editable `ai_context/` directory.
+**Do not switch back to onefile.** A onefile exe extracts itself to `%TEMP%\_MEIxxxxx` and runs from
+there for its whole life, and Windows' temp cleanup deletes files there that have gone 7 days without
+access. On 2026-10-09 it took `certifi\cacert.pem` from a process started on 2026-10-01: every HTTPS
+call failed with `Could not find a suitable TLS CA certificate bundle` while the webhook kept
+answering `202`, so PRs were dropped without a review. Loaded DLLs survive (they are locked); data
+files and modules not yet imported do not. The production target is a client codebase
 written mostly in **Delphi (Object Pascal)**, not Python — prompts are language-aware and must stay
 that way.
 
@@ -26,7 +32,7 @@ pip install -r requirements.txt
 # Run the server (creates config.ini + ai_context/ on first run, then exits with code 2)
 python run.py
 
-# Build the distributable executable -> dist/PyAgentIA/
+# Build the distributable folder -> dist/PyAgentIA/ (PyAgentIA.exe + _internal/)
 # Use the .bat wrapper: Windows opens .ps1 in Notepad from cmd.exe, and the
 # default ExecutionPolicy (Restricted) blocks .ps1 even inside PowerShell.
 build.bat
@@ -69,9 +75,10 @@ validation → inline PR comments (or `GitWorker` merge).
 **Core layers:**
 
 - **`app/core/paths.py`** — `diretorio_base()` (folder of the `.exe`, or repo root in development)
-  and `caminho_recurso()` (files bundled inside PyInstaller's `_MEIPASS`). Every path that the user
-  must be able to edit goes through `diretorio_base()`; never use `__file__` for those, because
-  under PyInstaller it points at a temp directory that is deleted on exit.
+  and `caminho_recurso()` (files bundled with the executable — `sys._MEIPASS`, which is
+  `_internal\` in the onedir build). Every path that the user must be able to edit goes through
+  `diretorio_base()`; never use `__file__` for those, because under PyInstaller it points inside
+  the bundle, which every deploy replaces.
 - **`app/core/config.py`** — INI layer described above.
 - **`app/core/logger.py`** — `configurar_logging()` (`RotatingFileHandler` + console, UTF-8 forced
   for the Windows console) and `registrar_execucao()` (structured per-PR JSON record). Use

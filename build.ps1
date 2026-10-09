@@ -7,6 +7,9 @@
 
     Resultado: dist\PyAgentIA\ pronta para copiar para o servidor.
 
+    O build e onedir: PyAgentIA.exe + pasta _internal\. Os dois andam juntos;
+    o motivo de nao ser onefile esta no cabecalho do pyagent.spec.
+
     Observacao: este arquivo e mantido em ASCII puro de proposito. O Windows
     PowerShell 5.1 le scripts .ps1 como ANSI, e acentos gravados em UTF-8 sem BOM
     viram erro de parse.
@@ -76,10 +79,13 @@ Write-Host "[4/5] Compilando com PyInstaller..." -ForegroundColor Green
 Invoke-Nativo "PyInstaller" { & $py -m PyInstaller (Join-Path $raiz "pyagent.spec") --clean --noconfirm }
 
 Write-Host "[5/5] Montando a pasta de distribuicao..." -ForegroundColor Green
-New-Item -ItemType Directory -Force -Path $pacote | Out-Null
+# O COLLECT do spec ja gerou dist\PyAgentIA\ com o .exe e o _internal\;
+# aqui so entram os arquivos editaveis ao lado dele.
+if (-not (Test-Path (Join-Path $pacote "_internal"))) {
+    throw "dist\PyAgentIA\_internal nao foi gerado. O pyagent.spec voltou a ser onefile?"
+}
 New-Item -ItemType Directory -Force -Path (Join-Path $pacote "ai_context") | Out-Null
 
-Move-Item (Join-Path $raiz "dist\PyAgentIA.exe") $pacote -Force
 Copy-Item (Join-Path $raiz "config.ini.example") (Join-Path $pacote "config.ini") -Force
 Copy-Item (Join-Path $raiz "app\ai_context\exemplos_treinamento.md") (Join-Path $pacote "ai_context") -Force
 Copy-Item (Join-Path $raiz "app\ai_context\regras_projeto.example.md") (Join-Path $pacote "ai_context\regras_projeto.md") -Force
@@ -88,14 +94,17 @@ if (Test-Path (Join-Path $raiz "DEPLOY.md")) {
     Copy-Item (Join-Path $raiz "DEPLOY.md") $pacote -Force
 }
 
-$bytes = (Get-Item (Join-Path $pacote "PyAgentIA.exe")).Length
+$bytes = (Get-ChildItem $pacote -Recurse -File | Measure-Object -Property Length -Sum).Sum
 $tamanho = [math]::Round($bytes / 1MB, 1)
 
 Write-Host ""
 Write-Host "Build concluido." -ForegroundColor Cyan
-Write-Host ("  Executavel: {0}\PyAgentIA.exe ({1} MB)" -f $pacote, $tamanho)
+Write-Host ("  Pacote: {0} ({1} MB, PyAgentIA.exe + _internal)" -f $pacote, $tamanho)
 Write-Host ""
 Write-Host "Proximos passos:" -ForegroundColor Yellow
 Write-Host ("  1. Preencha {0}\config.ini (chaves de API e credenciais do Bitbucket)" -f $pacote)
 Write-Host ("  2. Ajuste {0}\ai_context\regras_projeto.md com as regras do sistema" -f $pacote)
-Write-Host ("  3. Copie a pasta {0} para o servidor e execute PyAgentIA.exe" -f $pacote)
+Write-Host ("  3. Copie a pasta {0} inteira para o servidor e execute PyAgentIA.exe" -f $pacote)
+Write-Host "     O .exe nao roda sem a pasta _internal ao lado dele."
+Write-Host "  Atualizando uma instalacao existente: pare o agente e substitua o"
+Write-Host "  PyAgentIA.exe e a pasta _internal. Mantenha config.ini, ai_context e logs."

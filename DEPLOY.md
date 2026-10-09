@@ -20,7 +20,8 @@ Python **não** é necessário: o executável já traz o interpretador embutido.
 
 ## 2. Instalação
 
-1. Copie a pasta `PyAgentIA` inteira para o servidor (ex.: `C:\PyAgentIA`).
+1. Copie a pasta `PyAgentIA` inteira para o servidor (ex.: `C:\PyAgentIA`), **incluindo a subpasta
+   `_internal`**: é nela que ficam o Python e as bibliotecas, e o `.exe` não roda sem ela.
 2. Execute `PyAgentIA.exe` uma vez. Se o `config.ini` ainda não existir, ele será criado e o
    programa encerra pedindo o preenchimento.
 3. Abra o `config.ini` e preencha, no mínimo:
@@ -54,6 +55,16 @@ INFO [run] Escutando em http://0.0.0.0:5000  (webhook: POST /webhook/bitbucket)
 
 **Códigos de saída:** `0` encerrado normalmente · `1` configuração inválida (os erros são listados
 na tela) · `2` primeira execução, arquivos recém-criados.
+
+### Atualizar uma instalação existente
+
+1. Pare o agente (feche a janela ou `nssm stop PyAgentIA`).
+2. Apague o `PyAgentIA.exe` e a pasta `_internal` antigos e copie os novos de `dist\PyAgentIA`.
+3. **Não** sobrescreva `config.ini`, `ai_context\` nem `logs\`: são os arquivos da instalação.
+4. Inicie o agente de novo.
+
+Vindo de uma versão que era um `.exe` único (sem `_internal`): é o mesmo procedimento. A pasta
+`_internal` é nova e precisa ir junto.
 
 ---
 
@@ -174,6 +185,23 @@ Get-ExecutionPolicy -List
 
 Rode pelo prompt (`cmd`) em vez de dar duplo clique, para ler a mensagem. Quase sempre é
 configuração faltando (saída `1`) ou primeira execução (saída `2`).
+
+Se a mensagem for `Failed to load Python DLL` ou citar `_internal`, só o `.exe` foi copiado: copie a
+pasta `_internal` para o lado dele.
+
+### `Could not find a suitable TLS CA certificate bundle, invalid path: ...\_MEIxxxxx\certifi\cacert.pem`
+
+O servidor ainda roda a versão antiga, que era um `.exe` único. Ela se extraía em
+`%TEMP%\_MEIxxxxx` e rodava dali; a limpeza de temporários do Windows apaga o que está há 7 dias sem
+acesso e levou o arquivo de certificados com o agente no ar. A partir daí toda chamada HTTPS falha,
+mas o webhook continua respondendo, então o log mostra `Novo evento recebido` seguido de
+`Falha não tratada ao processar o PR` em todo PR.
+
+- **Correção:** atualize para o build atual (com a pasta `_internal`, veja a seção 2), que não usa o
+  `%TEMP%`.
+- **Paliativo:** reiniciar o `.exe` extrai uma pasta nova e funciona por mais ~7 dias.
+- Os PRs que falharam nesse período não foram revisados. Reenvie o evento pelo histórico do webhook
+  no Bitbucket ou faça um novo push no PR.
 
 ### `git não encontrado no PATH`
 

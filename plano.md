@@ -478,6 +478,10 @@ Função nova em `app/services/diff_utils.py`.
 
 #### 6.1 Ferramenta e modo
 
+> **Revisto em 09/10/2026: o build agora é `--onedir`.** O onefile roda de `%TEMP%\_MEIxxxxx`, e a
+> limpeza de temporários do Windows apagou o `certifi\cacert.pem` de um processo com 7 dias no ar.
+> Detalhes no `CLAUDE.md` e no cabeçalho do `pyagent.spec`. O texto abaixo é o plano original.
+
 **PyInstaller**, modo `--onefile`. Justificativa: você quer o executável numa pasta com os arquivos
 de config ao lado — `--onedir` criaria um `_internal/` cheio de DLLs poluindo essa pasta. O custo do
 `--onefile` é 2-4s a mais no start (descompactação), irrelevante para um serviço que sobe uma vez e

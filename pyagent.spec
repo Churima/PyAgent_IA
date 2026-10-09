@@ -4,9 +4,19 @@
 Gere com:
     pyinstaller pyagent.spec --clean --noconfirm
 
-Os arquivos em `datas` viajam dentro do executável e são usados apenas como
-MODELO: na primeira execução eles são copiados para a pasta ao lado do .exe,
-onde o usuário pode editá-los.
+Modo onedir: o resultado é dist/PyAgentIA/ com o PyAgentIA.exe e a pasta
+_internal/ (interpretador, DLLs, certifi...). O .exe não roda sem ela.
+
+Não voltar para onefile. O onefile se extrai em %TEMP%\\_MEIxxxxx e roda de lá
+enquanto o processo viver; a limpeza de temporários do Windows apaga o que está
+há 7 dias sem acesso, e em 09/10/2026 levou o certifi\\cacert.pem de um processo
+iniciado em 01/10. Toda chamada HTTPS passou a falhar ("Could not find a suitable
+TLS CA certificate bundle") enquanto o webhook seguia respondendo 202, e os PRs
+foram perdidos sem aviso. As DLLs já carregadas sobrevivem porque ficam travadas;
+arquivos de dados e módulos ainda não importados, não.
+
+Os arquivos em `datas` são usados apenas como MODELO: na primeira execução eles
+são copiados para a pasta ao lado do .exe, onde o usuário pode editá-los.
 """
 
 import os
@@ -57,9 +67,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,  # binários e dados vão para o COLLECT (onedir)
     name="PyAgentIA",
     debug=False,
     bootloader_ignore_signals=False,
@@ -72,4 +81,13 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon="assets/icone.ico" if os.path.isfile("assets/icone.ico") else None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="PyAgentIA",
 )
